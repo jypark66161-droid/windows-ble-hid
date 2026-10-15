@@ -1,0 +1,33 @@
+name: DeskBridge BLE Diagnostic x64
+
+on:
+  push:
+    branches:
+      - 'deskbridge/ble-diagnostics-v1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test core
+        run: dotnet test tests/BleHid.Core.Tests/BleHid.Core.Tests.csproj -c Release
+      - name: Build self-contained CLI
+        run: dotnet publish src/BleHid.Cli/BleHid.Cli.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -o artifacts/cli
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          if (!(Test-Path artifacts/cli/BleHid.Cli.exe)) { throw "BleHid.Cli.exe missing" }
+          Copy-Item README.md, LICENSE artifacts/cli/
+          Compress-Archive -Path artifacts/cli/* -DestinationPath DeskBridge_BLE_HID_Diagnostic_Win11_x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge_BLE_HID_Diagnostic_Win11_x64
+          path: DeskBridge_BLE_HID_Diagnostic_Win11_x64.zip
