@@ -193,7 +193,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
                               : " (expected while starting)"
             : "";
 
-        Log?.Invoke($"[adv ] status -> {args.Status} (error: {args.Error}){note}");
+        Log?.Invoke($"[adv ] status -> {args.Status} (error: {args.Error}) kLive={SubscribedKeyboardClients} mLive={SubscribedMouseClients}{note}");
 
         if (args.Status == GattServiceProviderAdvertisementStatus.Started)
         {
@@ -220,7 +220,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         {
             using var deferral = args.GetDeferral();
             var request = await args.GetRequestAsync();
-            Log?.Invoke($"[read] host read {name}");
+            Log?.Invoke($"[read] {name} host={ShortAddress(args.Session.DeviceId.Id)}");
             request.RespondWithValue(CryptographicBuffer.CreateFromByteArray(value));
         };
     }
@@ -400,7 +400,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
         characteristic.SubscribedClientsChanged += (sender, _) =>
         {
-            Log?.Invoke($"[subs] {name}: {sender.SubscribedClients.Count} subscriber(s)");
+            Log?.Invoke($"[subs] {name}: {sender.SubscribedClients.Count} subscriber(s) hosts=[{string.Join(", ", sender.SubscribedClients.Select(c => ShortAddress(c.Session.DeviceId.Id)))}] kLive={SubscribedKeyboardClients} mLive={SubscribedMouseClients} adv={AdvertisementStatus}");
             ReturnLocalIfTargetUnavailable();
             _ = RefreshConnectionParametersAsync();
         };
@@ -456,7 +456,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
     private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
     {
-        Log?.Invoke($"[link] connection status -> {sender.ConnectionStatus}");
+        Log?.Invoke($"[link] host={ShortAddress(sender.DeviceId)} status -> {sender.ConnectionStatus} kLive={SubscribedKeyboardClients} mLive={SubscribedMouseClients} adv={AdvertisementStatus}");
         if (sender.ConnectionStatus != BluetoothConnectionStatus.Disconnected) return;
 
         // The host owns its lock state and can change it while we are not attached, so a
@@ -485,7 +485,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
             return;
 
         _connectionIntervalsMs[device.DeviceId] = intervalMs;
-        Log?.Invoke($"[link] connection interval -> {intervalMs} ms");
+        Log?.Invoke($"[link] host={ShortAddress(device.DeviceId)} connection interval -> {intervalMs} ms");
     }
 
     public Task SendKeyboardAsync(KeyModifiers modifiers, params byte[] usages)
