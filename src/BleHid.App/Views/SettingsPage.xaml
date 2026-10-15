@@ -64,6 +64,20 @@
       <ui:ToggleSwitch x:Name="SwitchGestureToggle" Click="OnSwitchGestureChanged" />
     </ui:CardControl>
 
+    <!-- Preserve upstream attribution in packaged DeskBridge derivatives. -->
+    <ui:CardControl Margin="0,0,0,8">
+      <ui:CardControl.Header>
+        <ui:TextBlock Text="About and open-source licenses" FontTypography="BodyStrong" />
+      </ui:CardControl.Header>
+      <StackPanel>
+        <ui:TextBlock TextWrapping="Wrap"
+                      Text="BLE HID based on windows-ble-hid by Abhishek Raj. Copyright (c) 2026 Abhishek Raj. Licensed under the MIT License." />
+        <ui:TextBlock Margin="0,8,0,0" TextWrapping="Wrap"
+                      Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                      Text="DeskBridge modifications are separate from the original project and are not endorsed by its author. See LICENSE and THIRD_PARTY_NOTICES.md in the distribution." />
+      </StackPanel>
+    </ui:CardControl>
+
     <ui:CardControl Icon="{ui:SymbolIcon ArrowExit20}">
       <ui:CardControl.Header>
         <StackPanel>
