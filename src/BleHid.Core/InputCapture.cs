@@ -41,6 +41,7 @@ public sealed class InputCapture : IDisposable
     private int _centerX, _centerY;
     private int _keyboardEvents, _mouseEvents, _rearms;
     private bool _switchLatched;
+    private bool _f8Latched;
     private bool _capsLockSwitchLatched;
     private volatile bool _passThrough;
     private volatile bool _running;
@@ -57,6 +58,7 @@ public sealed class InputCapture : IDisposable
     public event Action<MouseButtons, int, int, int>? MouseReport;
     public event Action? SwitchHostRequested;
     public event Action? StopRequested;
+    public event Action? ResumeRequested;
     public event Action<string>? Log;
 
     public bool IsRunning => _running;
@@ -293,6 +295,19 @@ public sealed class InputCapture : IDisposable
 
         if (isDown) _pressedVirtualKeys.Add(virtualKey);
         else _pressedVirtualKeys.Remove(virtualKey);
+
+        // F8 resumes the last subscribed remote HID target. Edge-triggered so holding
+        // the key does not repeatedly toggle capture. The key remains local while idle.
+        if (virtualKey == 0x77) // VK_F8
+        {
+            if (!isDown) _f8Latched = false;
+            else if (!_f8Latched)
+            {
+                _f8Latched = true;
+                ResumeRequested?.Invoke();
+            }
+            return !(_passThrough || releaseLocally);
+        }
 
         if (virtualKey == 0x14)
         {
