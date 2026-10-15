@@ -13,7 +13,23 @@ if (Flag("--install-autostart")) return BackgroundMode.InstallAutoStart(true);
 if (Flag("--remove-autostart")) return BackgroundMode.InstallAutoStart(false);
 
 var peripheral = new BleHidPeripheral(requireEncryption);
-peripheral.Log += message => Console.WriteLine(message);
+// DeskBridge diagnostics: append peripheral events without changing HID report behavior.
+var diagnosticsPath = AppPaths.InLogs($"deskbridge-hid-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+using var diagnosticsWriter = new StreamWriter(
+    new FileStream(diagnosticsPath, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite))
+{ AutoFlush = true };
+var diagnosticLock = new object();
+void DiagnosticLog(string message)
+{
+    lock (diagnosticLock)
+    {
+        var line = $"[{DateTimeOffset.Now:yyyy-MM-ddTHH:mm:ss.fffzzz}] {message}";
+        diagnosticsWriter.WriteLine(line);
+        Console.WriteLine(line);
+    }
+}
+peripheral.Log += DiagnosticLog;
+DiagnosticLog($"[diag] started; log={diagnosticsPath}; pid={Environment.ProcessId}");
 
 // Hook callbacks must not block, so reports are queued and sent sequentially.
 var sendQueue = Channel.CreateUnbounded<Func<Task>>(new UnboundedChannelOptions { SingleReader = true });
