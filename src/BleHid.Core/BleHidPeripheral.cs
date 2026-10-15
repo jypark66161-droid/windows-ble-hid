@@ -836,8 +836,9 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         if (target is null)
         {
             var status = await characteristic.NotifyValueAsync(buffer);
-            if (status != GattCommunicationStatus.Success)
-                Log?.Invoke($"[hid-tx] broadcast notification failed: {status}");
+            foreach (var result in status)
+                if (result.Status != GattCommunicationStatus.Success)
+                    Log?.Invoke($"[hid-tx] broadcast notification failed: {result.Status}");
             return;
         }
 
@@ -850,8 +851,8 @@ public sealed class BleHidPeripheral : IAsyncDisposable
                 return;
             }
             var result = await characteristic.NotifyValueAsync(buffer, client);
-            if (result != GattCommunicationStatus.Success)
-                Log?.Invoke($"[hid-tx] notification failed: {result} (host={ShortAddress(target)})");
+            if (result.Status != GattCommunicationStatus.Success)
+                Log?.Invoke($"[hid-tx] notification failed: {result.Status} (host={ShortAddress(target)})");
             // Even Success means accepted by the Windows GATT stack, NOT confirmed by Android HID.
             return;
         }
