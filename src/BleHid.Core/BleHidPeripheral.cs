@@ -439,7 +439,8 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
         characteristic.SubscribedClientsChanged += (sender, _) =>
         {
-            Log?.Invoke($"[subs] {name}: {sender.SubscribedClients.Count} subscriber(s)");
+            var live = sender.SubscribedClients.Count(client => IsLiveHost(client.Session.DeviceId.Id));
+            Log?.Invoke($"[subs] {name}: {sender.SubscribedClients.Count} cached, {live} live; subscription is not Android HID input confirmation");
             ReturnLocalIfTargetUnavailable();
             TryRestorePendingTarget();
             _ = RefreshConnectionParametersAsync();
@@ -834,7 +835,9 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         var target = _selectedHostId;
         if (target is null)
         {
-            await characteristic.NotifyValueAsync(buffer);
+            var status = await characteristic.NotifyValueAsync(buffer);
+            if (status != GattCommunicationStatus.Success)
+                Log?.Invoke($"[hid-tx] broadcast notification failed: {status}");
             return;
         }
 
@@ -846,7 +849,10 @@ public sealed class BleHidPeripheral : IAsyncDisposable
                 Log?.Invoke("[recovery] target is disconnected; suppressing stale HID notification");
                 return;
             }
-            await characteristic.NotifyValueAsync(buffer, client);
+            var result = await characteristic.NotifyValueAsync(buffer, client);
+            if (result != GattCommunicationStatus.Success)
+                Log?.Invoke($"[hid-tx] notification failed: {result} (host={ShortAddress(target)})");
+            // Even Success means accepted by the Windows GATT stack, NOT confirmed by Android HID.
             return;
         }
 
