@@ -169,6 +169,8 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
         await CreateBatteryServiceAsync();
         await CreateDeviceInformationServiceAsync();
+        Log?.Invoke("[profile] " + HidProfileFingerprint.DescribePersistedState(
+            AppPaths.InRoot("hid-gatt-profile.sha256")));
 
         _advertisingStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _provider.AdvertisementStatusChanged += OnAdvertisementStatusChanged;
