@@ -457,7 +457,23 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
     {
         Log?.Invoke($"[link] connection status -> {sender.ConnectionStatus}");
+        if (sender.ConnectionStatus == BluetoothConnectionStatus.Connected)
+        {
+            // A recovered ACL is not proof that Android has restored HID report subscriptions.
+            // Never report input recovery until both live report subscriptions are observed.
+            var keyboardReady = _keyboardInput?.SubscribedClients.Any(
+                client => string.Equals(client.Session.DeviceId.Id, sender.DeviceId,
+                    StringComparison.OrdinalIgnoreCase)) == true;
+            var mouseReady = _mouseInput?.SubscribedClients.Any(
+                client => string.Equals(client.Session.DeviceId.Id, sender.DeviceId,
+                    StringComparison.OrdinalIgnoreCase)) == true;
+            Log?.Invoke($"[recovery] link connected; keyboard subscription={keyboardReady}, mouse subscription={mouseReady}; functional HID input is not verified");
+            _ = RefreshConnectionParametersAsync();
+            return;
+        }
         if (sender.ConnectionStatus != BluetoothConnectionStatus.Disconnected) return;
+
+        Log?.Invoke($"[recovery] HID subscriptions for {sender.DeviceId} must be revalidated after disconnect");
 
         // The host owns its lock state and can change it while we are not attached, so a
         // reconnect starts from the default rather than carrying a stale belief forward.
@@ -750,6 +766,11 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         foreach (var client in characteristic.SubscribedClients)
         {
             if (!string.Equals(client.Session.DeviceId.Id, target, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!IsLiveHost(client.Session.DeviceId.Id))
+            {
+                Log?.Invoke("[recovery] target is disconnected; suppressing stale HID notification");
+                return;
+            }
             await characteristic.NotifyValueAsync(buffer, client);
             return;
         }
