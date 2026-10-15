@@ -80,24 +80,21 @@ jobs:
           if (-not (Test-Path "artifacts/app/${{ matrix.rid }}/BleHid.App.exe")) { $missing += 'BleHid.App.exe' }
           if ($missing) { throw "missing from the package: $($missing -join ', ')" }
 
-      # Two archives because the two have different shapes: the CLI is one portable executable,
-      # while the desktop app needs its WPF native DLLs beside it.
-      - name: Package
+      # upload-artifact makes the downloadable ZIP itself; do not ZIP twice.
+      - name: Include license and notices
         run: |
           Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md artifacts/cli/${{ matrix.rid }}
           Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md artifacts/app/${{ matrix.rid }}
-          Compress-Archive -Path artifacts/cli/${{ matrix.rid }}/* -DestinationPath BleHid-Cli-${{ github.ref_name }}-${{ matrix.rid }}.zip
-          Compress-Archive -Path artifacts/app/${{ matrix.rid }}/* -DestinationPath BleHid-App-${{ github.ref_name }}-${{ matrix.rid }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: BleHid-Cli-${{ github.ref_name }}-${{ matrix.rid }}
-          path: BleHid-Cli-${{ github.ref_name }}-${{ matrix.rid }}.zip
+          path: artifacts/cli/${{ matrix.rid }}/*
 
       - uses: actions/upload-artifact@v4
         with:
           name: BleHid-App-${{ github.ref_name }}-${{ matrix.rid }}
-          path: BleHid-App-${{ github.ref_name }}-${{ matrix.rid }}.zip
+          path: artifacts/app/${{ matrix.rid }}/*
 
   release:
     needs: build
