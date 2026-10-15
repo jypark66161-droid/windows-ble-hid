@@ -9,7 +9,7 @@ namespace BleHid.Core;
 /// </summary>
 public static class CaptureSession
 {
-    internal enum Queued { Report, MouseReport, SwitchHost, GoLocal }
+    internal enum Queued { Report, MouseReport, SwitchHost, GoLocal, ResumeHost }
 
     internal readonly record struct InputReport(Queued Kind,
         KeyModifiers Modifiers = KeyModifiers.None, byte[]? Usages = null,
@@ -160,6 +160,16 @@ public static class CaptureSession
                             continue;
                         }
 
+                        if (key.Kind == Queued.ResumeHost)
+                        {
+                            if (peripheral.ResumeLastHost())
+                                log("  [host] F8 resumed previous HID target");
+                            else
+                                log("  [host] F8 cannot resume: no matching host with live keyboard and mouse subscriptions");
+                            capture.SetPassThrough(peripheral.IsLocalTarget);
+                            continue;
+                        }
+
                         if (key.Kind is Queued.SwitchHost or Queued.GoLocal)
                         {
                             // Read before the target moves: this is the host we are leaving, and
@@ -234,6 +244,11 @@ public static class CaptureSession
             reports.EnqueueTargetChange(Queued.SwitchHost);
             Wake();
         };
+        capture.ResumeRequested += () =>
+        {
+            reports.EnqueueTargetChange(Queued.ResumeHost);
+            Wake();
+        };
         capture.StopRequested += () =>
         {
             if (stopEndsSession)
@@ -263,7 +278,7 @@ public static class CaptureSession
             log("  Ctrl+Alt+CapsLock or Ctrl+D+C switches target.");
             log(stopEndsSession
                 ? "  capturing - Ctrl+Alt+Q stops."
-                : "  capturing - Ctrl+Alt+Q returns input to this PC.");
+                : "  capturing - Ctrl+Alt+Q returns input to this PC; F8 resumes prior HID host.");
 
             capture.Start();
             await stopped.Task;
