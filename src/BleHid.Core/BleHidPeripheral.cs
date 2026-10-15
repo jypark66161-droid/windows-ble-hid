@@ -742,38 +742,30 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         TargetChanged?.Invoke();
     }
 
-    /// <summary>Cycles this PC -> host1 -> ... -> hostN -> this PC. Safe to call from any thread.</summary>
+    /// <summary>Cycles subscribed remote HID hosts only; this PC is never a host target.</summary>
     public string SelectNextHost()
     {
-        _pendingRecoveryHostId = null;
         var hosts = Hosts();
-        _warnedMissingHost = false;
-
-        if (hosts.Count == 0) return SelectLocal();
-
-        // Broadcast is not in the rotation; it is a fallback reached through SelectAllHosts.
-        if (_localOnly)
+        if (hosts.Count == 0)
         {
-            _localOnly = false;
-            _selectedHostId = hosts[0].DeviceId;
-            _lastManualHostId = _selectedHostId;
-            TargetChanged?.Invoke();
-            return hosts[0].Display;
+            Log?.Invoke("[host] no live remote HID host; retaining local input for safety");
+            return SelectedHostDisplay;
         }
 
-        if (_selectedHostId is null) return SelectLocal();
-
+        var current = _selectedHostId;
         var index = -1;
         for (var i = 0; i < hosts.Count; i++)
-            if (string.Equals(hosts[i].DeviceId, _selectedHostId, StringComparison.OrdinalIgnoreCase)) { index = i; break; }
+            if (string.Equals(hosts[i].DeviceId, current, StringComparison.OrdinalIgnoreCase))
+            { index = i; break; }
+        var next = hosts[(index + 1) % hosts.Count];
 
-        var next = index + 1;
-        if (next >= hosts.Count) return SelectLocal();
-
-        _selectedHostId = hosts[next].DeviceId;
-        _lastManualHostId = _selectedHostId;
+        _pendingRecoveryHostId = null;
+        _localOnly = false;
+        _selectedHostId = next.DeviceId;
+        _lastManualHostId = next.DeviceId;
+        _warnedMissingHost = false;
         TargetChanged?.Invoke();
-        return hosts[next].Display;
+        return next.Display;
     }
 
     /// <summary>Resumes the prior manually selected device, or the only live subscribed device.</summary>
