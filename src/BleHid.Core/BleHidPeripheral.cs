@@ -28,8 +28,11 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     private void Stage(string id, string name)
     {
         var at = _traceClock.ElapsedMilliseconds;
-        var previous = _stages.AddOrUpdate(id, (at, name), (_, _) => (at, name));
-        Log?.Invoke($"[stage] host={ShortAddress(id)} {name} at={at}ms");
+        if (_stages.TryGetValue(id, out var previous))
+            Log?.Invoke($"[stage] host={ShortAddress(id)} {previous.Stage} -> {name}; delta={at - previous.At}ms; uptime={at}ms");
+        else
+            Log?.Invoke($"[stage] host={ShortAddress(id)} first={name}; uptime={at}ms");
+        _stages[id] = (at, name);
     }
     private readonly GattProtectionLevel _protection;
     private readonly ConcurrentDictionary<string, string> _hostNames = new(StringComparer.OrdinalIgnoreCase);
