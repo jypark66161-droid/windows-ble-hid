@@ -51,7 +51,7 @@ Console.WriteLine($"""
       move <dx> <dy>       move the pointer
       click <l|r|m>        click a mouse button
       scroll <n>           scroll wheel
-      capture              redirect local keyboard+mouse (Ctrl+Alt+Q stops)
+      capture              redirect keyboard+mouse; Ctrl+Alt+Q returns local, F8 resumes
       capture verbose      same, with per-report timing diagnostics
       capture <ms>         same, with a custom pointer report interval
       host                 list subscribed hosts and the current target
@@ -120,7 +120,7 @@ while (true)
                 if (mouseIntervalMs <= 0) mouseIntervalMs = 10;
 
                 await CaptureSession.RunAsync(peripheral, Console.WriteLine, verbose, () => mouseIntervalMs,
-                    stopEndsSession: true, CancellationToken.None);
+                    stopEndsSession: false, CancellationToken.None);
                 break;
             }
 
