@@ -3,9 +3,8 @@ name: release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
-  push:
     branches: [deskbridge-hid-recovery-license-20261015]
+  workflow_dispatch:
 
 permissions:
   contents: write
