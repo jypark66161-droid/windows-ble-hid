@@ -21,7 +21,21 @@ if (Flag("--install-autostart")) return BackgroundMode.InstallAutoStart(true);
 if (Flag("--remove-autostart")) return BackgroundMode.InstallAutoStart(false);
 
 var peripheral = new BleHidPeripheral(requireEncryption);
-peripheral.Log += message => Console.WriteLine(message);
+var tracePath = AppPaths.InLogs("hid-connection-trace.log");
+using var traceWriter = new StreamWriter(new FileStream(tracePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+var traceGate = new object();
+void LogTrace(string message)
+{
+    var line = $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] {message}";
+    lock (traceGate)
+    {
+        traceWriter.WriteLine(line);
+        Console.WriteLine(message);
+    }
+}
+LogTrace("=== BLE HID process started ===");
+LogTrace("Trace file: " + tracePath);
+peripheral.Log += LogTrace;
 
 // Hook callbacks must not block, so reports are queued and sent sequentially.
 var sendQueue = Channel.CreateUnbounded<Func<Task>>(new UnboundedChannelOptions { SingleReader = true });
