@@ -239,7 +239,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         {
             using var deferral = args.GetDeferral();
             var request = await args.GetRequestAsync();
-            Stage(request.Session.DeviceId.Id, "read " + name);
+            Log?.Invoke($"[read-stage] {name}; uptime={_traceClock.ElapsedMilliseconds}ms (GATT read callback; client ID not exposed here)");
             Log?.Invoke($"[read] host read {name} at {_traceClock.ElapsedMilliseconds}ms");
             request.RespondWithValue(CryptographicBuffer.CreateFromByteArray(value));
         };
