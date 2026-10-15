@@ -1,121 +1,56 @@
-name: release
+name: DeskBridge BLE HID CLI
 
 on:
   push:
-    tags: ['v*']
     branches: [deskbridge-hid-recovery-license-20261015]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
-    # Windows only: the test project targets net8.0-windows10.0.19041.0 like the code it covers.
     runs-on: windows-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-
-      - name: Test
-        run: >
-          dotnet test tests/BleHid.Core.Tests/BleHid.Core.Tests.csproj
-          -c Release
-          --logger "trx;LogFileName=results.trx"
-          --results-directory TestResults
-
-      # tests/Invoke-HandoverTests.ps1 and tests/MANUAL-TESTS.md cannot run here: both need a
-      # Bluetooth radio, which GitHub-hosted runners do not have. Run them before tagging.
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: TestResults/*.trx
+      - name: Run core tests
+        run: dotnet test tests/BleHid.Core.Tests/BleHid.Core.Tests.csproj -c Release
 
   build:
     needs: test
-    # Must be Windows: the project targets net8.0-windows10.0.19041.0 and uses WinRT projections.
     runs-on: windows-latest
-
-    strategy:
-      matrix:
-        rid: [win-x64, win-arm64]
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-
-      - name: Publish CLI
+      - name: Publish Windows x64 CLI
         run: >
           dotnet publish src/BleHid.Cli/BleHid.Cli.csproj
           -c Release
-          -r ${{ matrix.rid }}
+          -r win-x64
           --self-contained true
           -p:PublishSingleFile=true
           -p:DebugType=none
-          -o artifacts/cli/${{ matrix.rid }}
-
-      - name: Smoke-test published CLI executable on Windows x64
-        if: matrix.rid == 'win-x64'
+          -o artifacts/cli
+      - name: Verify executable starts and reports x64
         shell: pwsh
         run: |
-          $exe = Resolve-Path "artifacts/cli/win-x64/BleHid.Cli.exe"
-          & $exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "Published CLI failed to launch ($LASTEXITCODE)" }
-
-      - name: Publish desktop app
-        run: >
-          dotnet publish src/BleHid.App/BleHid.App.csproj
-          -c Release
-          -r ${{ matrix.rid }}
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:DebugType=none
-          -o artifacts/app/${{ matrix.rid }}
-
-      - name: Verify both executables are present
+          $exe = Resolve-Path "artifacts/cli/BleHid.Cli.exe"
+          $output = & $exe --self-test 2>&1 | Out-String
+          Write-Host $output
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'launch OK' -or $output -notmatch 'process=X64') {
+            throw "Published Windows x64 CLI did not launch successfully as x64"
+          }
+      - name: Include open-source license
+        shell: pwsh
         run: |
-          $missing = @()
-          if (-not (Test-Path "artifacts/cli/${{ matrix.rid }}/BleHid.Cli.exe")) { $missing += 'BleHid.Cli.exe' }
-          if (-not (Test-Path "artifacts/app/${{ matrix.rid }}/BleHid.App.exe")) { $missing += 'BleHid.App.exe' }
-          if ($missing) { throw "missing from the package: $($missing -join ', ')" }
-
-      # upload-artifact makes the downloadable ZIP itself; do not ZIP twice.
-      - name: Include license and notices
-        run: |
-          Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md artifacts/cli/${{ matrix.rid }}
-          Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md artifacts/app/${{ matrix.rid }}
-
+          Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md artifacts/cli
       - uses: actions/upload-artifact@v4
         with:
-          name: BleHid-Cli-${{ github.ref_name }}-${{ matrix.rid }}
-          path: artifacts/cli/${{ matrix.rid }}/*
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: BleHid-App-${{ github.ref_name }}-${{ matrix.rid }}
-          path: artifacts/app/${{ matrix.rid }}/*
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: '*.zip'
-          draft: true
-          generate_release_notes: true
+          name: DeskBridge_BLE_HID_CLI_WIN11_x64_build-${{ github.run_number }}
+          path: artifacts/cli/*
+          if-no-files-found: error
