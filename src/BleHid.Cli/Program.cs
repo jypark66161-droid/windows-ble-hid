@@ -85,7 +85,7 @@ Console.WriteLine($"""
       move <dx> <dy>       move the pointer
       click <l|r|m>        click a mouse button
       scroll <n>           scroll wheel
-      capture              redirect keyboard+mouse; Ctrl+Alt+Q returns local, F8 resumes
+      capture              redirect keyboard+mouse; Ctrl+Alt+Q returns to command prompt
       --interactive         open diagnostics command prompt (default: F8 hotkeys)
       capture verbose      same, with per-report timing diagnostics
       capture <ms>         same, with a custom pointer report interval
@@ -154,8 +154,18 @@ while (true)
                                                  .FirstOrDefault(v => v > 0);
                 if (mouseIntervalMs <= 0) mouseIntervalMs = 10;
 
-                await CaptureSession.RunAsync(peripheral, Console.WriteLine, verbose, () => mouseIntervalMs,
-                    stopEndsSession: false, CancellationToken.None);
+                // Interactive capture must return to Console.ReadLine after Ctrl+Alt+Q.
+                // Persistent F8 hotkeys belong to the default no-argument mode.
+                try
+                {
+                    await CaptureSession.RunAsync(peripheral, Console.WriteLine, verbose, () => mouseIntervalMs,
+                        stopEndsSession: true, CancellationToken.None);
+                }
+                finally
+                {
+                    peripheral.SelectLocal();
+                }
+                Console.WriteLine("  local input restored; command prompt ready.");
                 break;
             }
 
