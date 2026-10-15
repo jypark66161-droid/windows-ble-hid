@@ -63,6 +63,14 @@ jobs:
           -p:DebugType=none
           -o artifacts/cli/${{ matrix.rid }}
 
+      - name: Smoke-test published CLI executable on Windows x64
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "artifacts/cli/win-x64/BleHid.Cli.exe"
+          & $exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Published CLI failed to launch ($LASTEXITCODE)" }
+
       - name: Publish desktop app
         run: >
           dotnet publish src/BleHid.App/BleHid.App.csproj
