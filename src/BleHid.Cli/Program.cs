@@ -49,14 +49,28 @@ catch (Exception ex)
     return 1;
 }
 
-if (Flag("--hotkeys"))
+if (!Flag("--interactive"))
 {
     // No 'capture' command: keep low-level hooks alive while local, and let F8
     // resume the only eligible Android HID host or the last manually selected one.
     peripheral.SelectLocal();
-    Console.WriteLine("Hotkey mode started. Ctrl+Alt+Q = local input; F8 = resume subscribed HID target. Ctrl+C = exit.");
-    await CaptureSession.RunAsync(peripheral, Console.WriteLine, verbose: false, () => 10,
-        stopEndsSession: false, CancellationToken.None);
+    Console.WriteLine("Hotkeys active: F8 = resume subscribed HID target, Ctrl+Alt+Q = PC local input. Ctrl+C = exit.");
+    using var hotkeysShutdown = new CancellationTokenSource();
+    ConsoleCancelEventHandler cancelHandler = (_, e) =>
+    {
+        e.Cancel = true;
+        hotkeysShutdown.Cancel();
+    };
+    Console.CancelKeyPress += cancelHandler;
+    try
+    {
+        await CaptureSession.RunAsync(peripheral, Console.WriteLine, verbose: false, () => 10,
+            stopEndsSession: false, hotkeysShutdown.Token);
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+    }
     await peripheral.DisposeAsync();
     return 0;
 }
@@ -72,7 +86,7 @@ Console.WriteLine($"""
       click <l|r|m>        click a mouse button
       scroll <n>           scroll wheel
       capture              redirect keyboard+mouse; Ctrl+Alt+Q returns local, F8 resumes
-      --hotkeys             run directly in hotkey mode without typing capture
+      --interactive         open diagnostics command prompt (default: F8 hotkeys)
       capture verbose      same, with per-report timing diagnostics
       capture <ms>         same, with a custom pointer report interval
       host                 list subscribed hosts and the current target
