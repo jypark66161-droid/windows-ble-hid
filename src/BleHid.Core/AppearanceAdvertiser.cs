@@ -1,67 +1,30 @@
 using Windows.Devices.Bluetooth.Advertisement;
-using Windows.Storage.Streams;
 
 namespace BleHid.Core;
 
 /// <summary>
-/// GattServiceProvider gives no control over the GAP Appearance field, and hosts such as
-/// Android use it to decide whether to attach their HOGP host. This publishes a parallel
-/// advertisement carrying Appearance = Keyboard to try to influence that classification.
+/// Compatibility shim for the historic CLI experiment.
+/// The WinRT advertisement publisher does not permit the system-reserved
+/// Appearance (AD 0x19) and service-list (AD 0x03) fields. Pretending to
+/// publish them would give false confidence that Android sees a keyboard.
 /// </summary>
 public sealed class AppearanceAdvertiser : IDisposable
 {
     public const ushort KeyboardAppearance = 0x03C1;
-    public const ushort MouseAppearance    = 0x03C2;
-
-    private BluetoothLEAdvertisementPublisher? _publisher;
+    public const ushort MouseAppearance = 0x03C2;
 
     public event Action<string>? Log;
 
     public BluetoothLEAdvertisementPublisherStatus Status =>
-        _publisher?.Status ?? BluetoothLEAdvertisementPublisherStatus.Created;
+        BluetoothLEAdvertisementPublisherStatus.Created;
 
     public bool Start(ushort appearance = KeyboardAppearance)
     {
-        try
-        {
-            var writer = new DataWriter { ByteOrder = ByteOrder.LittleEndian };
-            writer.WriteUInt16(appearance);
-
-            var advertisement = new BluetoothLEAdvertisement();
-            advertisement.DataSections.Add(new BluetoothLEAdvertisementDataSection
-            {
-                DataType = 0x19, // GAP Appearance
-                Data = writer.DetachBuffer()
-            });
-
-            var uuidWriter = new DataWriter { ByteOrder = ByteOrder.LittleEndian };
-            uuidWriter.WriteUInt16(0x1812);
-            advertisement.DataSections.Add(new BluetoothLEAdvertisementDataSection
-            {
-                DataType = 0x03, // Complete list of 16-bit service UUIDs
-                Data = uuidWriter.DetachBuffer()
-            });
-
-            _publisher = new BluetoothLEAdvertisementPublisher(advertisement);
-            _publisher.StatusChanged += (sender, args) =>
-                Log?.Invoke($"[appr] publisher -> {args.Status} (error: {args.Error})");
-
-            _publisher.Start();
-            Log?.Invoke($"[appr] started, status = {_publisher.Status}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Log?.Invoke($"[appr] FAILED: {ex.Message}");
-            _publisher = null;
-            return false;
-        }
+        Log?.Invoke("[appr] Windows GATT advertising does not expose a custom GAP appearance; " +
+            "reserved fields 0x19/0x03 cannot be set via BluetoothLEAdvertisementPublisher. " +
+            "No additional advertisement was started.");
+        return false;
     }
 
-    public void Dispose()
-    {
-        if (_publisher?.Status == BluetoothLEAdvertisementPublisherStatus.Started)
-            _publisher.Stop();
-        _publisher = null;
-    }
+    public void Dispose() { }
 }
