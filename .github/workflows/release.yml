@@ -4,6 +4,8 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+  push:
+    branches: [deskbridge-hid-recovery-license-20261015]
 
 permissions:
   contents: write
@@ -83,8 +85,8 @@ jobs:
       # while the desktop app needs its WPF native DLLs beside it.
       - name: Package
         run: |
-          Copy-Item LICENSE, README.md artifacts/cli/${{ matrix.rid }}
-          Copy-Item LICENSE, README.md artifacts/app/${{ matrix.rid }}
+          Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md artifacts/cli/${{ matrix.rid }}
+          Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md artifacts/app/${{ matrix.rid }}
           Compress-Archive -Path artifacts/cli/${{ matrix.rid }}/* -DestinationPath BleHid-Cli-${{ github.ref_name }}-${{ matrix.rid }}.zip
           Compress-Archive -Path artifacts/app/${{ matrix.rid }}/* -DestinationPath BleHid-App-${{ github.ref_name }}-${{ matrix.rid }}.zip
 
