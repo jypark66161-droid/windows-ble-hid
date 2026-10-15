@@ -63,30 +63,23 @@ catch (Exception ex)
     return 1;
 }
 
+// Keep console commands available while the low-level F8 hotkey session runs.
+var hotkeyCancellation = new CancellationTokenSource();
+Task? hotkeySession = null;
 if (!Flag("--interactive"))
 {
-    // No 'capture' command: keep low-level hooks alive while local, and let F8
-    // resume the only eligible Android HID host or the last manually selected one.
     peripheral.SelectLocal();
-    Console.WriteLine("Hotkeys active: F8 = resume subscribed HID target, Ctrl+Alt+Q = PC local input. Ctrl+C = exit.");
-    using var hotkeysShutdown = new CancellationTokenSource();
-    ConsoleCancelEventHandler cancelHandler = (_, e) =>
-    {
-        e.Cancel = true;
-        hotkeysShutdown.Cancel();
-    };
-    Console.CancelKeyPress += cancelHandler;
-    try
-    {
-        await CaptureSession.RunAsync(peripheral, Console.WriteLine, verbose: false, () => 10,
-            stopEndsSession: false, hotkeysShutdown.Token);
-    }
-    finally
-    {
-        Console.CancelKeyPress -= cancelHandler;
-    }
-    await peripheral.DisposeAsync();
-    return 0;
+    Console.WriteLine("F8 hotkeys active; command prompt also available. Ctrl+Alt+Q = local input.");
+    hotkeySession = CaptureSession.RunAsync(peripheral, Console.WriteLine,
+        verbose: false, () => 10, stopEndsSession: false, hotkeyCancellation.Token);
+}
+
+async Task StopHotkeysAsync()
+{
+    hotkeyCancellation.Cancel();
+    if (hotkeySession is not null)
+        try { await hotkeySession; }
+        catch (OperationCanceledException) { }
 }
 
 Console.WriteLine($"""
@@ -100,7 +93,7 @@ Console.WriteLine($"""
       click <l|r|m>        click a mouse button
       scroll <n>           scroll wheel
       capture              redirect keyboard+mouse; Ctrl+Alt+Q returns to command prompt
-      --interactive         open diagnostics command prompt (default: F8 hotkeys)
+      --interactive        command prompt without background F8 hotkeys
       capture verbose      same, with per-report timing diagnostics
       capture <ms>         same, with a custom pointer report interval
       host                 list subscribed hosts and the current target
@@ -144,6 +137,7 @@ while (true)
         switch (command)
         {
             case "quit" or "exit":
+                await StopHotkeysAsync();
                 appearance.Dispose();
                 await peripheral.DisposeAsync();
                 return 0;
@@ -154,6 +148,14 @@ while (true)
 
             case "capture":
             {
+                if (hotkeySession is not null)
+                {
+                    if (peripheral.ResumeLastHost())
+                        Console.WriteLine("  HID target selected; Ctrl+Alt+Q returns input locally.");
+                    else
+                        Console.WriteLine("  no live subscribed HID host; local input remains available.");
+                    break;
+                }
                 if (peripheral.SubscribedKeyboardClients == 0)
                 {
                     Console.WriteLine("  no subscriber yet - connect a host first");
@@ -402,6 +404,7 @@ while (true)
     }
 }
 
+await StopHotkeysAsync();
 await peripheral.DisposeAsync();
 appearance.Dispose();
 return 0;
