@@ -38,6 +38,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     private bool _warnedMissingHost;
     // Preserve the explicitly selected host across a temporary BLE disconnect.
     private string? _pendingRecoveryHostId;
+    private string? _lastManualHostId;
     private bool _everAdvertised;
     private TaskCompletionSource<bool>? _advertisingStarted;
     private GattServiceProvider? _provider;
@@ -755,6 +756,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         {
             _localOnly = false;
             _selectedHostId = hosts[0].DeviceId;
+            _lastManualHostId = _selectedHostId;
             TargetChanged?.Invoke();
             return hosts[0].Display;
         }
@@ -769,12 +771,43 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         if (next >= hosts.Count) return SelectLocal();
 
         _selectedHostId = hosts[next].DeviceId;
+        _lastManualHostId = _selectedHostId;
         TargetChanged?.Invoke();
         return hosts[next].Display;
     }
 
+    /// <summary>Resumes the prior manually selected device, or the only live subscribed device.</summary>
+    public bool ResumeLastHost()
+    {
+        if (!_localOnly) return false;
+        var hosts = Hosts();
+        var previous = _lastManualHostId ?? _pendingRecoveryHostId;
+        var target = hosts.FirstOrDefault(h => string.Equals(h.DeviceId, previous,
+            StringComparison.OrdinalIgnoreCase));
+        if (target is null && hosts.Count == 1) target = hosts[0];
+        if (target is null) return false;
+        if (!HasBothSubscriptions(target.DeviceId)) return false;
+
+        _pendingRecoveryHostId = null;
+        _lastManualHostId = target.DeviceId;
+        _localOnly = false;
+        _selectedHostId = target.DeviceId;
+        _warnedMissingHost = false;
+        Log?.Invoke("[host] F8 resumed prior HID target; confirm input on Android");
+        TargetChanged?.Invoke();
+        return true;
+    }
+
+    private bool HasBothSubscriptions(string deviceId) =>
+        IsLiveHost(deviceId) &&
+        _keyboardInput?.SubscribedClients.Any(c => string.Equals(c.Session.DeviceId.Id,
+            deviceId, StringComparison.OrdinalIgnoreCase)) == true &&
+        _mouseInput?.SubscribedClients.Any(c => string.Equals(c.Session.DeviceId.Id,
+            deviceId, StringComparison.OrdinalIgnoreCase)) == true;
+
     public string SelectLocal()
     {
+        if (!_localOnly && _selectedHostId is not null) _lastManualHostId = _selectedHostId;
         _pendingRecoveryHostId = null;
         _localOnly = true;
         _selectedHostId = null;
@@ -799,6 +832,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         if (index < 0 || index >= hosts.Count) return false;
         _localOnly = false;
         _selectedHostId = hosts[index].DeviceId;
+        _lastManualHostId = _selectedHostId;
         _warnedMissingHost = false;
         TargetChanged?.Invoke();
         return true;
