@@ -163,7 +163,7 @@ public sealed class SwitchGestureOptionsTests
         }
         finally
         {
-            File.Delete(path);
+            DeleteWithRetry(path);
         }
     }
 
@@ -189,4 +189,13 @@ public sealed class SwitchGestureOptionsTests
             File.Delete(path);
         }
     }
+    private static void DeleteWithRetry(string path)
+    {
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            try { File.Delete(path); return; }
+            catch (IOException) when (attempt < 19) { Thread.Sleep(50); }
+        }
+    }
+
 }
