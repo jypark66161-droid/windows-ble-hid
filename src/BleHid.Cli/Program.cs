@@ -2,6 +2,14 @@ using System.Threading.Channels;
 using BleHid.Cli;
 using BleHid.Core;
 
+// Run from CI on the published self-contained EXE: this verifies the Windows
+// loader can start the artifact without requiring a BLE adapter or pairing.
+if (args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
+{
+    Console.WriteLine($"BleHid.Cli launch OK | process={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture} | OS={System.Runtime.InteropServices.RuntimeInformation.OSDescription}");
+    return 0;
+}
+
 var requireEncryption = !args.Contains("--plain", StringComparer.OrdinalIgnoreCase);
 
 bool Flag(string name) => args.Contains(name, StringComparer.OrdinalIgnoreCase);
