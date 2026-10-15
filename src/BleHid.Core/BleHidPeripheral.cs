@@ -42,6 +42,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     private TaskCompletionSource<bool>? _advertisingStarted;
     private GattServiceProvider? _provider;
     private GattServiceProvider? _batteryProvider;
+    private GattServiceProvider? _deviceInformationProvider;
     private GattLocalCharacteristic? _keyboardInput;
     private GattLocalCharacteristic? _mouseInput;
     private byte[] _lastKeyboardReport = new byte[HidReports.KeyboardReportLength];
@@ -167,6 +168,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
             HidDescriptors.MouseReportId, () => _lastMouseReport);
 
         await CreateBatteryServiceAsync();
+        await CreateDeviceInformationServiceAsync();
 
         _advertisingStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _provider.AdvertisementStatusChanged += OnAdvertisementStatusChanged;
@@ -254,6 +256,41 @@ public sealed class BleHidPeripheral : IAsyncDisposable
             var request = await args.GetRequestAsync();
             Log?.Invoke("[read] host read Battery Level");
             request.RespondWithValue(CryptographicBuffer.CreateFromByteArray([100]));
+        };
+    }
+
+    private async Task CreateDeviceInformationServiceAsync()
+    {
+        var result = await GattServiceProvider.CreateAsync(HidDescriptors.DeviceInformationService);
+        Record("Device Information service 0x180A", result.Error.ToString(),
+            result.Error == BluetoothError.Success);
+        if (result.Error != BluetoothError.Success) return;
+        _deviceInformationProvider = result.ServiceProvider;
+
+        // Only publish an actual assigned vendor ID; spoofing another vendor is not an HID fix.
+        if (!HidDeviceIdentity.TryParse(Environment.GetEnvironmentVariable("BLEHID_PNP_ID"),
+            out var identity))
+        {
+            Log?.Invoke("[hid ] Device Information 0x180A active; PnP ID not configured (requires assigned vendor identity)");
+            return;
+        }
+        var parameters = new GattLocalCharacteristicParameters
+        {
+            CharacteristicProperties = GattCharacteristicProperties.Read,
+            ReadProtectionLevel = _protection
+        };
+        var characteristicResult = await _deviceInformationProvider.Service.CreateCharacteristicAsync(
+            HidDescriptors.PnpId, parameters);
+        Record("PnP ID 0x2A50", characteristicResult.Error.ToString(),
+            characteristicResult.Error == BluetoothError.Success);
+        if (characteristicResult.Error != BluetoothError.Success) return;
+        var value = identity.ToPnpIdBytes();
+        characteristicResult.Characteristic.ReadRequested += async (_, args) =>
+        {
+            using var deferral = args.GetDeferral();
+            var request = await args.GetRequestAsync();
+            Log?.Invoke("[read] host read PnP ID");
+            request.RespondWithValue(CryptographicBuffer.CreateFromByteArray(value));
         };
     }
 
@@ -839,6 +876,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
             _provider = null;
         }
         _batteryProvider = null;
+        _deviceInformationProvider = null;
         foreach (var device in _hostDevices.Values)
         {
             device.ConnectionStatusChanged -= OnConnectionStatusChanged;
