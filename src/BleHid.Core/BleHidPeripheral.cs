@@ -36,6 +36,8 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     private string? _selectedHostId;
     private bool _localOnly;
     private bool _warnedMissingHost;
+    // Preserve the explicitly selected host across a temporary BLE disconnect.
+    private string? _pendingRecoveryHostId;
     private bool _everAdvertised;
     private TaskCompletionSource<bool>? _advertisingStarted;
     private GattServiceProvider? _provider;
@@ -402,6 +404,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         {
             Log?.Invoke($"[subs] {name}: {sender.SubscribedClients.Count} subscriber(s)");
             ReturnLocalIfTargetUnavailable();
+            TryRestorePendingTarget();
             _ = RefreshConnectionParametersAsync();
         };
 
@@ -468,6 +471,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
                 client => string.Equals(client.Session.DeviceId.Id, sender.DeviceId,
                     StringComparison.OrdinalIgnoreCase)) == true;
             Log?.Invoke($"[recovery] link connected; keyboard subscription={keyboardReady}, mouse subscription={mouseReady}; functional HID input is not verified");
+            TryRestorePendingTarget();
             _ = RefreshConnectionParametersAsync();
             return;
         }
@@ -479,11 +483,20 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         // reconnect starts from the default rather than carrying a stale belief forward.
         _lockState.Forget(sender.DeviceId);
 
+        // The safety fallback goes local, but remember the chosen host for re-subscription.
+        // Do not restore a broadcast selection or a target chosen after the disconnect.
+        var restoreTarget = !_localOnly && string.Equals(_selectedHostId, sender.DeviceId,
+            StringComparison.OrdinalIgnoreCase) ? _selectedHostId : null;
         ReturnLocalIfTargetUnavailable(
             _hostDevices
                 .Where(pair => pair.Value.ConnectionStatus == BluetoothConnectionStatus.Connected)
                 .Select(pair => pair.Key),
             _selectedHostId is null ? "all hosts disconnected" : "selected host disconnected");
+        if (restoreTarget is not null && _localOnly)
+        {
+            _pendingRecoveryHostId = restoreTarget;
+            Log?.Invoke("[recovery] target saved; awaiting live keyboard and mouse subscriptions");
+        }
     }
 
     [SupportedOSPlatform("windows10.0.22000.0")]
@@ -667,9 +680,31 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         Log?.Invoke($"[host] {message} - returning input to this PC");
     }
 
+    private void TryRestorePendingTarget()
+    {
+        var pending = _pendingRecoveryHostId;
+        if (pending is null || !_localOnly || !IsLiveHost(pending)) return;
+
+        var keyboardReady = _keyboardInput?.SubscribedClients.Any(
+            client => string.Equals(client.Session.DeviceId.Id, pending,
+                StringComparison.OrdinalIgnoreCase)) == true;
+        var mouseReady = _mouseInput?.SubscribedClients.Any(
+            client => string.Equals(client.Session.DeviceId.Id, pending,
+                StringComparison.OrdinalIgnoreCase)) == true;
+        if (!keyboardReady || !mouseReady) return;
+
+        _pendingRecoveryHostId = null;
+        _localOnly = false;
+        _selectedHostId = pending;
+        _warnedMissingHost = false;
+        Log?.Invoke("[recovery] target restored after live HID subscriptions; confirm actual input on phone");
+        TargetChanged?.Invoke();
+    }
+
     /// <summary>Cycles this PC -> host1 -> ... -> hostN -> this PC. Safe to call from any thread.</summary>
     public string SelectNextHost()
     {
+        _pendingRecoveryHostId = null;
         var hosts = Hosts();
         _warnedMissingHost = false;
 
@@ -700,6 +735,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
     public string SelectLocal()
     {
+        _pendingRecoveryHostId = null;
         _localOnly = true;
         _selectedHostId = null;
         _warnedMissingHost = false;
@@ -709,6 +745,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
     public void SelectAllHosts()
     {
+        _pendingRecoveryHostId = null;
         _localOnly = false;
         _selectedHostId = null;
         _warnedMissingHost = false;
@@ -717,6 +754,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
     public bool SelectHost(int index)
     {
+        _pendingRecoveryHostId = null;
         var hosts = Hosts();
         if (index < 0 || index >= hosts.Count) return false;
         _localOnly = false;
