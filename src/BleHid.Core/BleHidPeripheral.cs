@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Collections.Concurrent;
 using System.Runtime.Versioning;
 using Windows.Devices.Bluetooth;
@@ -22,6 +23,10 @@ public sealed record HostTarget(string DeviceId, string Address, string? Name)
 public sealed class BleHidPeripheral : IAsyncDisposable
 {
     private readonly List<PeripheralDiagnostics> _diagnostics = [];
+    private readonly Stopwatch _hidClock = Stopwatch.StartNew();
+    private long _readSequence;
+    private void Trace(string eventName, string detail) =>
+        Log?.Invoke($"[HID-DIAG] +{_hidClock.ElapsedMilliseconds}ms {eventName} {detail}");
     private readonly GattProtectionLevel _protection;
     private readonly ConcurrentDictionary<string, string> _hostNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, BluetoothLEDevice> _hostDevices = new(StringComparer.OrdinalIgnoreCase);
@@ -168,6 +173,8 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         _mouseInput = await CreateInputReportAsync("Mouse input report", service,
             HidDescriptors.MouseReportId, () => _lastMouseReport);
 
+        if (_keyboardInput is null || _mouseInput is null)
+            throw new InvalidOperationException("HID input reports incomplete; refusing to advertise.");
         await CreateBatteryServiceAsync();
         await CreateDeviceInformationServiceAsync();
         Log?.Invoke("[profile] " + HidProfileFingerprint.DescribePersistedState(
@@ -188,6 +195,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
             == _advertisingStarted.Task;
 
         Record("StartAdvertising", _provider.AdvertisementStatus.ToString(), started);
+        Trace("HID-READY", $"advertising={_provider.AdvertisementStatus} keyboard={_keyboardInput is not null} mouse={_mouseInput is not null} security={_protection} reportMapBytes={HidDescriptors.ReportMapValue.Length}");
     }
 
     private void OnAdvertisementStatusChanged(GattServiceProvider sender,
@@ -221,14 +229,21 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
         var result = await service.CreateCharacteristicAsync(uuid, parameters);
         Record(name, $"{result.Error} ({value.Length} bytes)", result.Error == BluetoothError.Success);
-        if (result.Error != BluetoothError.Success) return;
+        if (result.Error != BluetoothError.Success) throw new InvalidOperationException($"Required HID characteristic {name} failed: {result.Error}");
 
         result.Characteristic.ReadRequested += async (_, args) =>
         {
             using var deferral = args.GetDeferral();
-            var request = await args.GetRequestAsync();
-            Log?.Invoke($"[read] host read {name}");
-            request.RespondWithValue(CryptographicBuffer.CreateFromByteArray(value));
+            var id = Interlocked.Increment(ref _readSequence);
+            var started = Stopwatch.GetTimestamp();
+            try
+            {
+                var request = await args.GetRequestAsync();
+                if (request is null) { Trace("READ-MISSING", $"#{id} {name}"); return; }
+                request.RespondWithValue(CryptographicBuffer.CreateFromByteArray(value));
+                Trace("READ-RESPONDED", $"#{id} {name} bytes={value.Length} elapsed={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F2}ms (Windows API accepted response; peer receipt unconfirmed)");
+            }
+            catch (Exception ex) { Trace("READ-ERROR", $"#{id} {name} elapsed={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F2}ms {ex}"); }
         };
     }
 
@@ -443,7 +458,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         characteristic.SubscribedClientsChanged += (sender, _) =>
         {
             var live = sender.SubscribedClients.Count(client => IsLiveHost(client.Session.DeviceId.Id));
-            Log?.Invoke($"[subs] {name}: {sender.SubscribedClients.Count} cached, {live} live; subscription is not Android HID input confirmation");
+            Trace("SUBSCRIPTION", $"{name} cached={sender.SubscribedClients.Count} live={live} clients={string.Join(",", sender.SubscribedClients.Select(c => ShortAddress(c.Session.DeviceId.Id) + ":" + IsLiveHost(c.Session.DeviceId.Id)))}; HID input not yet verified");
             ReturnLocalIfTargetUnavailable();
             TryRestorePendingTarget();
             _ = RefreshConnectionParametersAsync();
@@ -500,7 +515,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
     private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
     {
-        Log?.Invoke($"[link] connection status -> {sender.ConnectionStatus}");
+        Trace("LINK", $"host={ShortAddress(sender.DeviceId)} status={sender.ConnectionStatus} keyboardLive={SubscribedKeyboardClients} mouseLive={SubscribedMouseClients}");
         if (sender.ConnectionStatus == BluetoothConnectionStatus.Connected)
         {
             // A recovered ACL is not proof that Android has restored HID report subscriptions.
