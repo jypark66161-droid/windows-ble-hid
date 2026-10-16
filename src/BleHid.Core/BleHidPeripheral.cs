@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Collections.Concurrent;
 using System.Runtime.Versioning;
 using Windows.Devices.Bluetooth;
@@ -23,17 +22,6 @@ public sealed record HostTarget(string DeviceId, string Address, string? Name)
 public sealed class BleHidPeripheral : IAsyncDisposable
 {
     private readonly List<PeripheralDiagnostics> _diagnostics = [];
-    private readonly Stopwatch _traceClock = Stopwatch.StartNew();
-    private readonly ConcurrentDictionary<string, (long At, string Stage)> _stages = new(StringComparer.OrdinalIgnoreCase);
-    private void Stage(string id, string name)
-    {
-        var at = _traceClock.ElapsedMilliseconds;
-        if (_stages.TryGetValue(id, out var previous))
-            Log?.Invoke($"[stage] host={ShortAddress(id)} {previous.Stage} -> {name}; delta={at - previous.At}ms; uptime={at}ms");
-        else
-            Log?.Invoke($"[stage] host={ShortAddress(id)} first={name}; uptime={at}ms");
-        _stages[id] = (at, name);
-    }
     private readonly GattProtectionLevel _protection;
     private readonly ConcurrentDictionary<string, string> _hostNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, BluetoothLEDevice> _hostDevices = new(StringComparer.OrdinalIgnoreCase);
@@ -239,8 +227,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         {
             using var deferral = args.GetDeferral();
             var request = await args.GetRequestAsync();
-            Log?.Invoke($"[read-stage] {name}; uptime={_traceClock.ElapsedMilliseconds}ms (GATT read callback; client ID not exposed here)");
-            Log?.Invoke($"[read] host read {name} at {_traceClock.ElapsedMilliseconds}ms");
+            Log?.Invoke($"[read] host read {name}");
             request.RespondWithValue(CryptographicBuffer.CreateFromByteArray(value));
         };
     }
@@ -456,9 +443,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         characteristic.SubscribedClientsChanged += (sender, _) =>
         {
             var live = sender.SubscribedClients.Count(client => IsLiveHost(client.Session.DeviceId.Id));
-            Log?.Invoke($"[subs] {name}: {sender.SubscribedClients.Count} cached, {live} live at {_traceClock.ElapsedMilliseconds}ms; subscription is not Android HID input confirmation");
-            foreach (var client in sender.SubscribedClients)
-                Stage(client.Session.DeviceId.Id, name + " subscribed, live=" + IsLiveHost(client.Session.DeviceId.Id));
+            Log?.Invoke($"[subs] {name}: {sender.SubscribedClients.Count} cached, {live} live; subscription is not Android HID input confirmation");
             ReturnLocalIfTargetUnavailable();
             TryRestorePendingTarget();
             _ = RefreshConnectionParametersAsync();
@@ -515,7 +500,6 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
     private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
     {
-        Stage(sender.DeviceId, "link " + sender.ConnectionStatus);
         Log?.Invoke($"[link] connection status -> {sender.ConnectionStatus}");
         if (sender.ConnectionStatus == BluetoothConnectionStatus.Connected)
         {
