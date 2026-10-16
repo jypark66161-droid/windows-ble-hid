@@ -194,7 +194,7 @@ catch (Exception ex)
 }
 finally
 {
-    if (provider is not null) { provider.StopAdvertising(); provider.Dispose(); }
+    if (provider is not null) { if (provider.AdvertisementStatus == GattServiceProviderAdvertisementStatus.Started) provider.StopAdvertising(); }
     lines.Writer.TryComplete();
     await writer;
 }
