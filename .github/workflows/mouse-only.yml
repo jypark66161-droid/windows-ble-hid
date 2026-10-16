@@ -1,0 +1,31 @@
+name: DeskBridge Mouse-Only HID Experiment
+on:
+  push:
+    branches: [deskbridge-mouse-only-stage1-20261016]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build mouse-only CLI
+        run: dotnet publish src/BleHid.MouseOnly/BleHid.MouseOnly.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -o artifacts/mouse
+      - name: Smoke test executable
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "artifacts/mouse/BleHid.MouseOnly.exe"
+          $out = & $exe --self-test 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch 'MouseOnly launch OK' -or $out -notmatch 'process=X64') { throw "Mouse-only smoke test failed" }
+      - name: Include attribution
+        shell: pwsh
+        run: Copy-Item LICENSE, THIRD_PARTY_NOTICES.md artifacts/mouse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge_MOUSE_ONLY_WIN11_x64_build-${{ github.run_number }}
+          path: artifacts/mouse/*
