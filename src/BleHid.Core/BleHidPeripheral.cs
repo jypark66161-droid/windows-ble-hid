@@ -322,7 +322,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
         var result = await service.CreateCharacteristicAsync(HidDescriptors.HidControlPoint, parameters);
         Record("HID Control Point", result.Error.ToString(), result.Error == BluetoothError.Success);
-        if (result.Error != BluetoothError.Success) return;
+        if (result.Error != BluetoothError.Success) throw new InvalidOperationException($"Required HID characteristic failed: {result.Error}");
 
         result.Characteristic.WriteRequested += async (_, args) =>
         {
@@ -345,7 +345,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
         var result = await service.CreateCharacteristicAsync(HidDescriptors.ProtocolMode, parameters);
         Record("Protocol Mode", result.Error.ToString(), result.Error == BluetoothError.Success);
-        if (result.Error != BluetoothError.Success) return;
+        if (result.Error != BluetoothError.Success) throw new InvalidOperationException($"HID Protocol Mode failed: {result.Error}");
 
         result.Characteristic.ReadRequested += async (_, args) =>
         {
@@ -377,7 +377,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
         var result = await service.CreateCharacteristicAsync(HidDescriptors.Report, parameters);
         Record("Keyboard LED output report", result.Error.ToString(), result.Error == BluetoothError.Success);
-        if (result.Error != BluetoothError.Success) return;
+        if (result.Error != BluetoothError.Success) throw new InvalidOperationException($"HID output report failed: {result.Error}");
 
         var characteristic = result.Characteristic;
 
@@ -412,6 +412,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         Record("Keyboard LED output report / Report Reference 0x2908",
             $"{descriptorResult.Error} (id={reportId}, type=Output)",
             descriptorResult.Error == BluetoothError.Success);
+        if (descriptorResult.Error != BluetoothError.Success) throw new InvalidOperationException($"HID output report reference failed: {descriptorResult.Error}");
     }
 
     /// <summary>
@@ -451,8 +452,10 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         {
             using var deferral = args.GetDeferral();
             var request = await args.GetRequestAsync();
-            Log?.Invoke($"[read] host read {name}");
-            request.RespondWithValue(CryptographicBuffer.CreateFromByteArray(currentValue()));
+            var started = Stopwatch.GetTimestamp();
+            var value = currentValue();
+            request.RespondWithValue(CryptographicBuffer.CreateFromByteArray(value));
+            Trace("READ-RESPONDED", $"{name} bytes={value.Length} callbackTail={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F2}ms peerReceipt=unknown");
         };
 
         characteristic.SubscribedClientsChanged += (sender, _) =>
@@ -476,6 +479,7 @@ public sealed class BleHidPeripheral : IAsyncDisposable
         Record($"{name} / Report Reference 0x2908",
             $"{descriptorResult.Error} (id={reportId}, type=Input)",
             descriptorResult.Error == BluetoothError.Success);
+        if (descriptorResult.Error != BluetoothError.Success) throw new InvalidOperationException($"HID input report reference {name} failed: {descriptorResult.Error}");
 
         return characteristic;
     }
