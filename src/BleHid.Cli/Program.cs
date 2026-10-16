@@ -21,20 +21,28 @@ if (Flag("--install-autostart")) return BackgroundMode.InstallAutoStart(true);
 if (Flag("--remove-autostart")) return BackgroundMode.InstallAutoStart(false);
 
 var peripheral = new BleHidPeripheral(requireEncryption);
+// Never block GATT callbacks on console or disk I/O.
 var tracePath = AppPaths.InLogs("hid-connection-trace.log");
-using var traceWriter = new StreamWriter(new FileStream(tracePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
-var traceGate = new object();
+var traceQueue = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
+var tracePump = Task.Run(async () =>
+{
+    try
+    {
+        using var writer = new StreamWriter(new FileStream(tracePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
+        await foreach (var entry in traceQueue.Reader.ReadAllAsync())
+        {
+            await writer.WriteLineAsync(entry);
+            await writer.FlushAsync();
+        }
+    }
+    catch (Exception ex) { Console.Error.WriteLine("[trace] writing failed: " + ex.Message); }
+});
 void LogTrace(string message)
 {
-    var line = $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] {message}";
-    lock (traceGate)
-    {
-        traceWriter.WriteLine(line);
-        Console.WriteLine(message);
-    }
+    traceQueue.Writer.TryWrite($"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] {message}");
+    Console.WriteLine(message);
 }
-LogTrace("=== BLE HID process started ===");
-LogTrace("Trace file: " + tracePath);
+LogTrace("=== BLE HID process started; log=" + tracePath + " ===");
 peripheral.Log += LogTrace;
 
 // Hook callbacks must not block, so reports are queued and sent sequentially.
@@ -69,17 +77,30 @@ Task? hotkeySession = null;
 if (!Flag("--interactive"))
 {
     peripheral.SelectLocal();
-    Console.WriteLine("F8 hotkeys active; command prompt also available. Ctrl+Alt+Q = local input.");
-    hotkeySession = CaptureSession.RunAsync(peripheral, Console.WriteLine,
-        verbose: false, () => 10, stopEndsSession: false, hotkeyCancellation.Token);
+    Console.WriteLine("Console ready. F8 becomes active after live HID keyboard and mouse subscriptions.");
+    // Avoid installing keyboard/mouse hooks during initial Android HOGP discovery.
+    hotkeySession = Task.Run(async () =>
+    {
+        try
+        {
+            while (!hotkeyCancellation.IsCancellationRequested &&
+                (peripheral.SubscribedKeyboardClients == 0 || peripheral.SubscribedMouseClients == 0))
+                await Task.Delay(300, hotkeyCancellation.Token);
+            if (hotkeyCancellation.IsCancellationRequested) return;
+            Console.WriteLine("[hotkeys] HID subscriptions observed; F8 input hook enabled (input remains local).");
+            await CaptureSession.RunAsync(peripheral, Console.WriteLine,
+                verbose: false, () => 10, stopEndsSession: false, hotkeyCancellation.Token);
+        }
+        catch (OperationCanceledException) { }
+    }, hotkeyCancellation.Token);
 }
-
 async Task StopHotkeysAsync()
 {
     hotkeyCancellation.Cancel();
     if (hotkeySession is not null)
-        try { await hotkeySession; }
-        catch (OperationCanceledException) { }
+        try { await hotkeySession; } catch (OperationCanceledException) { }
+    traceQueue.Writer.TryComplete();
+    await tracePump;
 }
 
 Console.WriteLine($"""
