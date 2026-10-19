@@ -16,6 +16,21 @@ jobs:
       - name: Publish standalone Windows executable
         shell: pwsh
         run: dotnet publish native-hogp/DeskBridge.NativeHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o native-hogp-out
+      - name: Add safe launcher
+        shell: pwsh
+        run: |
+          @'
+          @echo off
+          cd /d "%~dp0"
+          echo DeskBridge BLE HID diagnostic launcher
+          echo.
+          "DeskBridge.NativeHogp.exe" %*
+          echo.
+          echo Application exit code: %errorlevel%
+          echo Log file: %~dp0DeskBridge-HOGP-startup.log
+          echo.
+          pause
+          '@ | Set-Content -Path native-hogp-out/START_HOGP_DIAGNOSTIC.cmd -Encoding ascii
       - uses: actions/upload-artifact@v4
         with:
           name: DeskBridge-NativeHOGP-Win64
