@@ -16,23 +16,22 @@ jobs:
       - name: Publish standalone Windows executable
         shell: pwsh
         run: dotnet publish native-hogp/DeskBridge.NativeHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o native-hogp-out
-      - name: Add safe launcher
+      - name: Windows Defender scan
         shell: pwsh
         run: |
-          @'
-          @echo off
-          cd /d "%~dp0"
-          echo DeskBridge BLE HID diagnostic launcher
-          echo.
-          "DeskBridge.NativeHogp.exe" %*
-          echo.
-          echo Application exit code: %errorlevel%
-          echo Log file: %~dp0DeskBridge-HOGP-startup.log
-          echo.
-          pause
-          '@ | Set-Content -Path native-hogp-out/START_HOGP_DIAGNOSTIC.cmd -Encoding ascii
+          $exe = (Resolve-Path "native-hogp-out/DeskBridge.NativeHogp.exe").Path
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          Write-Host "SHA256: $hash"
+          $mp = "$env:ProgramFiles/Windows Defender/MpCmdRun.exe"
+          if (!(Test-Path $mp)) { throw "Windows Defender CLI unavailable; scan not verified" }
+          & $mp -Scan -ScanType 3 -File $exe -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Windows Defender scan did not complete cleanly (exit $LASTEXITCODE)" }
+      - name: Record build hash
+        shell: pwsh
+        run: |
+          (Get-FileHash native-hogp-out/DeskBridge.NativeHogp.exe -Algorithm SHA256).Hash | Set-Content native-hogp-out/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: DeskBridge-NativeHOGP-Win64
+          name: DeskBridge-NativeHOGP-Scanned-Win64
           path: native-hogp-out/
           if-no-files-found: error
