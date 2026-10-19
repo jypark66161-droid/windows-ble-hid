@@ -1,0 +1,37 @@
+name: Native HOGP Windows Build
+on:
+  push:
+    branches: [deskbridge-native-hogp-v01]
+  pull_request:
+    paths: ['native-hogp/**', '.github/workflows/native-hogp-windows.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish standalone Windows executable
+        shell: pwsh
+        run: dotnet publish native-hogp/DeskBridge.NativeHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o native-hogp-out
+      - name: Windows Defender scan
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "native-hogp-out/DeskBridge.NativeHogp.exe").Path
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          Write-Host "SHA256: $hash"
+          $mp = "$env:ProgramFiles/Windows Defender/MpCmdRun.exe"
+          if (!(Test-Path $mp)) { throw "Windows Defender CLI unavailable; scan not verified" }
+          & $mp -Scan -ScanType 3 -File $exe -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Windows Defender scan did not complete cleanly (exit $LASTEXITCODE)" }
+      - name: Record build hash
+        shell: pwsh
+        run: |
+          (Get-FileHash native-hogp-out/DeskBridge.NativeHogp.exe -Algorithm SHA256).Hash | Set-Content native-hogp-out/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-NativeHOGP-Scanned-Win64
+          path: native-hogp-out/
+          if-no-files-found: error
