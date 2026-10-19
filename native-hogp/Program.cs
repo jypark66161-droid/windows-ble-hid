@@ -21,7 +21,7 @@ static class App
         0x95,0x06,0x75,0x08,0x15,0x00,0x25,0x65,
         0x05,0x07,0x19,0x00,0x29,0x65,0x81,0x00,0xC0
     };
-    static GattServiceProvider? hid,bat,dis;
+    static GattServiceProvider? hid,bat;
     static GattLocalCharacteristic? mouse, keyboard;
     static byte mode=1;
     static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
@@ -55,7 +55,7 @@ static class App
        });
     static async Task<int> Main(string[] args) {
         try {
-            L("DeskBridge Native HOGP v0.2 - independent Windows BLE mouse and keyboard");
+            L("DeskBridge Native HOGP v0.3 - Windows-reserved 180A skipped");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -63,16 +63,13 @@ static class App
             var sec=args.Contains("--plain") ? GattProtectionLevel.Plain : GattProtectionLevel.EncryptionRequired;
             bat=await Service(0x180F);
             await Readonly(bat,0x2A19,new byte[]{100});
-            dis=await Service(0x180A);
-            await Readonly(dis,0x2A29,Encoding.UTF8.GetBytes("DeskBridge Experimental"));
-            await Readonly(dis,0x2A24,Encoding.UTF8.GetBytes("Native Mouse Keyboard v0.2"));
-            await Readonly(dis,0x2A50,new byte[]{2,0xFF,0xFF,1,0,1,0});
+            L("INFO: 180A Device Information is Windows-reserved; skipping app-created 180A.");
             hid=await Service(0x1812);
             await Readonly(hid,0x2A4A,new byte[]{0x11,0x01,0,0x02},sec);
             await Readonly(hid,0x2A4B,ReportMap,sec);
             mouse=await Characteristic(hid,0x2A4D,new GattLocalCharacteristicParameters {
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
-                ReadProtectionLevel=sec, StaticValue=new byte[5].AsBuffer()
+                ReadProtectionLevel=sec, StaticValue=new byte[4].AsBuffer()
             });
             mouse.SubscribedClientsChanged += (_,_)=>L($"SUBSCRIBERS={mouse.SubscribedClients.Count}");
             var d=await mouse.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
@@ -81,7 +78,7 @@ static class App
             L($"MOUSE REPORT REF 2908: {d.Error}");
             keyboard=await Characteristic(hid,0x2A4D,new GattLocalCharacteristicParameters {
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
-                ReadProtectionLevel=sec, StaticValue=new byte[9].AsBuffer()
+                ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
             keyboard.SubscribedClientsChanged += (_,_)=>L($"KEYBOARD SUBSCRIBERS={keyboard.SubscribedClients.Count}");
             var kd=await keyboard.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
@@ -105,7 +102,6 @@ static class App
                 var def=e.GetDeferral();try {var req=await e.GetRequestAsync(); L("CONTROL POINT WRITE");}catch(Exception ex){L(ex.Message);}finally{def.Complete();}
             };
             bat.StartAdvertising(new GattServiceProviderAdvertisingParameters{IsDiscoverable=false,IsConnectable=true});
-            dis.StartAdvertising(new GattServiceProviderAdvertisingParameters{IsDiscoverable=false,IsConnectable=true});
             hid.StartAdvertising(new GattServiceProviderAdvertisingParameters{IsDiscoverable=true,IsConnectable=true});
             L($"ADVERTISING HID={hid.AdvertisementStatus}");
             L("Pair phone, then commands: status, right, left, up, down, click, a, enter, space, quit");
@@ -117,9 +113,9 @@ static class App
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
-                    await keyboard.NotifyValueAsync(new byte[]{2,0,0,usage,0,0,0,0,0}.AsBuffer());
+                    await keyboard.NotifyValueAsync(new byte[]{0,0,usage,0,0,0,0,0}.AsBuffer());
                     await Task.Delay(40);
-                    await keyboard.NotifyValueAsync(new byte[]{2,0,0,0,0,0,0,0,0}.AsBuffer());
+                    await keyboard.NotifyValueAsync(new byte[]{0,0,0,0,0,0,0,0}.AsBuffer());
                     L($"KEY SENT {cmd}");continue;
                 }
                 var (buttons,dx,dy,wheel) = cmd switch {
@@ -127,11 +123,11 @@ static class App
                     "down"=>(0,0,12,0),"click"=>(1,0,0,0),_=>(0,0,0,0)
                 };
                 if(mouse.SubscribedClients.Count==0){L("NO INPUT SUBSCRIBER. Device may not be recognized as HID.");continue;}
-                var result=await mouse.NotifyValueAsync(new byte[]{1,(byte)buttons,unchecked((byte)dx),unchecked((byte)dy),unchecked((byte)wheel)}.AsBuffer());
+                var result=await mouse.NotifyValueAsync(new byte[]{(byte)buttons,unchecked((byte)dx),unchecked((byte)dy),unchecked((byte)wheel)}.AsBuffer());
                 L($"NOTIFY recipients={result.Count}, status={string.Join(",",result.Select(x=>x.Status))}");
-                if(cmd=="click") {await Task.Delay(35);await mouse.NotifyValueAsync(new byte[]{1,0,0,0,0}.AsBuffer());}
+                if(cmd=="click") {await Task.Delay(35);await mouse.NotifyValueAsync(new byte[]{0,0,0,0}.AsBuffer());}
             }
-            hid.StopAdvertising();bat.StopAdvertising();dis.StopAdvertising();return 0;
+            hid.StopAdvertising();bat.StopAdvertising();return 0;
         }catch(Exception ex){L("FATAL ERROR: " + ex); PauseOnError(); return 1;}
     }
 }
