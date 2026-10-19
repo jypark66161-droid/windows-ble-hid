@@ -24,7 +24,18 @@ static class App
     static GattServiceProvider? hid,bat,dis;
     static GattLocalCharacteristic? mouse, keyboard;
     static byte mode=1;
-    static void L(string text) => Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {text}");
+    static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
+    static void L(string text) {
+        var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {text}";
+        Console.WriteLine(line);
+        try { File.AppendAllText(LogPath, line + Environment.NewLine); } catch { }
+    }
+    static void PauseOnError() {
+        Console.WriteLine();
+        Console.WriteLine("STARTUP FAILED. This window will remain open until you press Enter.");
+        Console.WriteLine("Log: " + LogPath);
+        try { Console.ReadLine(); } catch { }
+    }
     static async Task<GattServiceProvider> Service(ushort id) {
         var r=await GattServiceProvider.CreateAsync(Id(id));
         L($"SERVICE {id:X4}: {r.Error}");
@@ -47,7 +58,7 @@ static class App
             L("DeskBridge Native HOGP v0.2 - independent Windows BLE mouse and keyboard");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
-                L("ERROR: BLE peripheral mode unavailable"); return 2;
+                L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
             }
             var sec=args.Contains("--plain") ? GattProtectionLevel.Plain : GattProtectionLevel.EncryptionRequired;
             bat=await Service(0x180F);
@@ -121,6 +132,6 @@ static class App
                 if(cmd=="click") {await Task.Delay(35);await mouse.NotifyValueAsync(new byte[]{1,0,0,0,0}.AsBuffer());}
             }
             hid.StopAdvertising();bat.StopAdvertising();dis.StopAdvertising();return 0;
-        }catch(Exception ex){Console.Error.WriteLine(ex);return 1;}
+        }catch(Exception ex){L("FATAL ERROR: " + ex); PauseOnError(); return 1;}
     }
 }
