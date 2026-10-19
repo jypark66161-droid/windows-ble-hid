@@ -1,0 +1,23 @@
+name: Native HOGP Windows Build
+on:
+  push:
+    branches: [deskbridge-native-hogp-v01]
+  pull_request:
+    paths: ['native-hogp/**', '.github/workflows/native-hogp-windows.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish standalone Windows executable
+        shell: pwsh
+        run: dotnet publish native-hogp/DeskBridge.NativeHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o native-hogp-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-NativeHOGP-Win64
+          path: native-hogp-out/
+          if-no-files-found: error
