@@ -86,12 +86,12 @@ static class App
                 var cmd=Console.ReadLine()?.Trim().ToLowerInvariant();
                 if(cmd==null || cmd=="quit")break;
                 if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, subscribed={mouse.SubscribedClients.Count}, protocol={mode}");continue;}
-                (byte buttons,sbyte dx,sbyte dy,sbyte wheel) = cmd switch {
+                var (buttons,dx,dy,wheel) = cmd switch {
                     "right"=>(0,12,0,0),"left"=>(0,-12,0,0),"up"=>(0,0,-12,0),
                     "down"=>(0,0,12,0),"click"=>(1,0,0,0),_=>(0,0,0,0)
                 };
                 if(mouse.SubscribedClients.Count==0){L("NO INPUT SUBSCRIBER. Device may not be recognized as HID.");continue;}
-                var result=await mouse.NotifyValueAsync(new byte[]{buttons,unchecked((byte)dx),unchecked((byte)dy),unchecked((byte)wheel)}.AsBuffer());
+                var result=await mouse.NotifyValueAsync(new byte[]{(byte)buttons,unchecked((byte)dx),unchecked((byte)dy),unchecked((byte)wheel)}.AsBuffer());
                 L($"NOTIFY recipients={result.Count}, status={string.Join(",",result.Select(x=>x.Status))}");
                 if(cmd=="click") {await Task.Delay(35);await mouse.NotifyValueAsync(new byte[4].AsBuffer());}
             }
