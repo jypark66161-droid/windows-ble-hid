@@ -87,7 +87,7 @@ static class App
     }
     static async Task<int> Main(string[] args) {
         try {
-            L("DeskBridge Native HOGP v0.4 - HID-only advertising / startup verification");
+            L("DeskBridge Native HOGP v0.5 - F8 phone / PC input toggle");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -139,12 +139,15 @@ static class App
                 PauseOnError();
                 return 3;
             }
-            L("Pair phone, then commands: status, right, left, up, down, click, a, enter, space, quit");
+            using var capture = new NativeInputCapture(mouse, keyboard, L);
+            L("Pair phone. F8 toggles PHONE/PC input; F9 emergency PC return.");
+            L("Commands: status, right, left, up, down, click, a, enter, space, quit");
+            using var checkTimer = new System.Threading.Timer(_ => { try { capture.HealthCheck(); } catch(Exception ex) { L("HEALTH ERROR: " + ex.Message); } }, null, 1000, 700);
             while(true) {
                 Console.Write("hogp> ");
                 var cmd=Console.ReadLine()?.Trim().ToLowerInvariant();
                 if(cmd==null || cmd=="quit")break;
-                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, protocol={mode}, abortedEvents={advErrors}");continue;}
+                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, abortedEvents={advErrors}");continue;}
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
@@ -162,6 +165,7 @@ static class App
                 L($"NOTIFY recipients={result.Count}, status={string.Join(",",result.Select(x=>x.Status))}");
                 if(cmd=="click") {await Task.Delay(35);await mouse.NotifyValueAsync(new byte[]{0,0,0,0}.AsBuffer());}
             }
+            capture.ReturnLocal("quit");
             hid.StopAdvertising();return 0;
         }catch(Exception ex){L("FATAL ERROR: " + ex); PauseOnError(); return 1;}
     }
