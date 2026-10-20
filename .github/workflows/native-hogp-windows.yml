@@ -1,7 +1,7 @@
 name: Native HOGP Windows Build
 on:
   push:
-    branches: [deskbridge-native-hogp-v01, deskbridge-native-hogp-v04-advertising, deskbridge-native-hogp-v05-capture, deskbridge-native-hogp-v06-rawinput]
+    branches: [deskbridge-native-hogp-v01, deskbridge-native-hogp-v04-advertising, deskbridge-native-hogp-v05-capture, deskbridge-native-hogp-v06-rawinput, deskbridge-native-hogp-v07-connection-trace]
   pull_request:
     paths: ['native-hogp/**', '.github/workflows/native-hogp-windows.yml']
   workflow_dispatch:
@@ -32,6 +32,6 @@ jobs:
           (Get-FileHash native-hogp-out/DeskBridge.NativeHogp.exe -Algorithm SHA256).Hash | Set-Content native-hogp-out/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: DeskBridge-NativeHOGP-v06-Win64
+          name: DeskBridge-NativeHOGP-v07-Win64
           path: native-hogp-out/
           if-no-files-found: error
