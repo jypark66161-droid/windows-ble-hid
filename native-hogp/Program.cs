@@ -96,7 +96,7 @@ static class App
                 PauseOnError(); return 4;
             }
             try {
-            L("DeskBridge Native HOGP v0.9 - single-instance BLE ownership / paced input");
+            L("DeskBridge Native HOGP v0.10 - recovery and serialized input");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -156,10 +156,9 @@ static class App
                 var def=e.GetDeferral();try {var req=await e.GetRequestAsync(); L("CONTROL POINT WRITE");}catch(Exception ex){L(ex.Message);}finally{def.Complete();}
             };
             L("BATTERY GATT REGISTERED; battery advertising disabled (HID service only).");
-            if(!await EnsureHidAdvertising()) {
-                L("STARTUP FAILED: HID advertising did not reach Started after 3 attempts.");
-                PauseOnError();
-                return 3;
+            while(!await EnsureHidAdvertising()) {
+                L("Advertising unavailable; retrying in 5 seconds without relaunch.");
+                await Task.Delay(5000);
             }
             using var capture = new NativeInputCapture(mouse, keyboard, L, bootMouse, bootKeyboard, () => mode);
             L("Pair phone. F8 toggles PHONE/PC input; F9 emergency PC return.");
