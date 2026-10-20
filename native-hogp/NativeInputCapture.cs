@@ -19,7 +19,7 @@ internal sealed class NativeInputCapture : IDisposable
     readonly GattLocalCharacteristic mouse, keyboard;
     readonly Action<string> log;
     readonly Channel<InputEvent> queue = Channel.CreateBounded<InputEvent>(new BoundedChannelOptions(1024) {
-        FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true, SingleWriter = false
+        FullMode = BoundedChannelFullMode.Wait, SingleReader = true, SingleWriter = false
     });
     readonly HookProc keyboardDelegate, mouseDelegate;
     IntPtr keyboardHook, mouseHook;
@@ -50,7 +50,6 @@ internal sealed class NativeInputCapture : IDisposable
         if (Active) { ReturnLocal("F8: PC input restored"); return; }
         if (!Ready) { log("F8: HID REPORT NOT SUBSCRIBED (mouse and keyboard required); input stays on PC"); return; }
         GetCursorPos(out POINT pos); lastX = pos.X; lastY = pos.Y;
-        buttons = 0; held.Clear(); modifiers = 0;
         Volatile.Write(ref active, 1);
         log("CAPTURE ON: PC mouse and keyboard redirected to phone; F8 returns to PC, F9 emergency return");
     }
