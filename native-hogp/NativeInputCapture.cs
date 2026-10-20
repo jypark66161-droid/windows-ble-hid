@@ -13,7 +13,8 @@ internal sealed class NativeInputCapture : IDisposable
     const uint WM_MOUSEMOVE=0x200, WM_LBUTTONDOWN=0x201, WM_LBUTTONUP=0x202, WM_RBUTTONDOWN=0x204, WM_RBUTTONUP=0x205;
     const uint WM_MBUTTONDOWN=0x207, WM_MBUTTONUP=0x208, WM_MOUSEWHEEL=0x20A, WM_QUIT=0x12;
     const int VK_F8=0x77, VK_F9=0x78, RIM_TYPEMOUSE=0, RID_INPUT=0x10000003, RIDEV_INPUTSINK=0x100;
-    readonly GattLocalCharacteristic mouse,keyboard;
+    readonly GattLocalCharacteristic mouse,keyboard,bootMouse,bootKeyboard;
+    readonly Func<byte> protocolMode;
     readonly Action<string> log;
     readonly HookProc keyboardDelegate,mouseDelegate;
     readonly WndProc windowDelegate;
@@ -33,10 +34,10 @@ internal sealed class NativeInputCapture : IDisposable
     int rawPackets,mousePackets;
     readonly record struct KeyEvent(int Epoch,int Vk,bool Down);
     public bool Active => Volatile.Read(ref active)==1;
-    public bool Ready => mouse.SubscribedClients.Count>0 && keyboard.SubscribedClients.Count>0;
-    public NativeInputCapture(GattLocalCharacteristic m,GattLocalCharacteristic k,Action<string> logger)
+    public bool Ready => Select(mouse).SubscribedClients.Count>0 && Select(keyboard).SubscribedClients.Count>0;
+    public NativeInputCapture(GattLocalCharacteristic m,GattLocalCharacteristic k,Action<string> logger,GattLocalCharacteristic bootM,GattLocalCharacteristic bootK,Func<byte> mode)
     {
-        mouse=m; keyboard=k; log=logger;
+        mouse=m; keyboard=k; bootMouse=bootM; bootKeyboard=bootK; protocolMode=mode; log=logger;
         keyboardDelegate=KeyboardCallback; mouseDelegate=MouseCallback; windowDelegate=WindowCallback;
         thread=new Thread(HookThread){IsBackground=true,Name="DeskBridge raw input"};
         thread.Start();
@@ -51,7 +52,7 @@ internal sealed class NativeInputCapture : IDisposable
             try {
                 if(!Ready || keyboardHook==IntPtr.Zero || mouseHook==IntPtr.Zero || window==IntPtr.Zero) { log("F8 REJECTED: HID subscription or input hooks missing; PC remains active"); return; }
                 // A notification succeeding only confirms transport acceptance, not Android HID processing.
-                var results=await keyboard.NotifyValueAsync(new byte[8].AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+                var results=await Select(keyboard).NotifyValueAsync(new byte[8].AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
                 if(results.Count==0 || results.Any(x=>x.Status!=GattCommunicationStatus.Success) || !Ready) {
                     log("F8 REJECTED: keyboard notification not accepted; PC remains active"); return;
                 }
@@ -213,10 +214,19 @@ internal sealed class NativeInputCapture : IDisposable
         } catch(OperationCanceledException) { }
         catch(Exception ex) { ReturnLocal("sender crashed: "+ex.Message); }
     }
+    GattLocalCharacteristic Select(GattLocalCharacteristic report)
+    {
+        var boot=ReferenceEquals(report,mouse)?bootMouse:bootKeyboard;
+        if(protocolMode()==0 && boot.SubscribedClients.Count>0) return boot;
+        if(report.SubscribedClients.Count>0) return report;
+        return boot;
+    }
     async Task<bool> Notify(GattLocalCharacteristic characteristic,byte[] payload,int epoch)
     {
         try {
-            var result=await characteristic.NotifyValueAsync(payload.AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(2),cancellation.Token);
+            var target=Select(characteristic);
+            if(ReferenceEquals(target,bootMouse) && payload.Length==4) payload=payload[..3];
+            var result=await target.NotifyValueAsync(payload.AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(2),cancellation.Token);
             if(result.Count==0 || result.Any(x=>x.Status!=GattCommunicationStatus.Success)) {
                 ReturnLocal("BLE notification rejected");return false;
             }
