@@ -27,7 +27,6 @@ static class App
     static readonly SemaphoreSlim advSignal = new(0, 100);
     static int advErrors;
     static int mouseSubscriptions, keyboardSubscriptions;
-    static readonly System.Collections.Concurrent.ConcurrentDictionary<string,byte> sessionSeen=new();
     static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
     static void L(string text) {
         var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {text}";
@@ -58,14 +57,18 @@ static class App
     }
     static async Task Readonly(GattServiceProvider s,ushort id,byte[] data,GattProtectionLevel sec=GattProtectionLevel.Plain) {
         var c=await Characteristic(s,id,new GattLocalCharacteristicParameters{
-            CharacteristicProperties=GattCharacteristicProperties.Read,ReadProtectionLevel=sec,StaticValue=data.AsBuffer()
+            CharacteristicProperties=GattCharacteristicProperties.Read,ReadProtectionLevel=sec,StaticValue=traceReads ? null : data.AsBuffer()
         });
         // Optional diagnostic mode: observe GATT reads without altering the normal static response.
         if(traceReads) c.ReadRequested+=async (_,e)=>{
             var d=e.GetDeferral();
             try {
                 var req=await e.GetRequestAsync();
-                L($"GATT READ {id:X4} offset={req.Offset}, staticLength={data.Length}, session={e.Session.SessionStatus}");
+                if(req==null) {L($"GATT READ {id:X4}: request unavailable");return;}
+                int offset=(int)req.Offset;
+                L($"GATT READ {id:X4} offset={offset}, staticLength={data.Length}, session={e.Session.SessionStatus}");
+                if(offset > data.Length) req.RespondWithProtocolError(0x07);
+                else req.RespondWithValue(data.AsSpan(offset).ToArray().AsBuffer());
             } catch(Exception ex) {L($"GATT READ TRACE ERROR {id:X4}: {ex.Message}");}
             finally {d.Complete();}
         };
