@@ -26,6 +26,8 @@ static class App
     static byte mode=1;
     static readonly SemaphoreSlim advSignal = new(0, 100);
     static int advErrors;
+    static int mouseSubscriptions, keyboardSubscriptions;
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string,byte> sessionSeen=new();
     static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
     static void L(string text) {
         var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {text}";
@@ -54,10 +56,21 @@ static class App
         if(r.Characteristic==null || r.Error!=BluetoothError.Success) throw new Exception($"Char {id:X4}: {r.Error}");
         return r.Characteristic;
     }
-    static async Task Readonly(GattServiceProvider s,ushort id,byte[] data,GattProtectionLevel sec=GattProtectionLevel.Plain) =>
-       await Characteristic(s,id,new GattLocalCharacteristicParameters{
-           CharacteristicProperties=GattCharacteristicProperties.Read,ReadProtectionLevel=sec,StaticValue=data.AsBuffer()
-       });
+    static async Task Readonly(GattServiceProvider s,ushort id,byte[] data,GattProtectionLevel sec=GattProtectionLevel.Plain) {
+        var c=await Characteristic(s,id,new GattLocalCharacteristicParameters{
+            CharacteristicProperties=GattCharacteristicProperties.Read,ReadProtectionLevel=sec,StaticValue=data.AsBuffer()
+        });
+        // Optional diagnostic mode: observe GATT reads without altering the normal static response.
+        if(traceReads) c.ReadRequested+=async (_,e)=>{
+            var d=e.GetDeferral();
+            try {
+                var req=await e.GetRequestAsync();
+                L($"GATT READ {id:X4} offset={req.Offset}, staticLength={data.Length}, session={e.Session.SessionStatus}");
+            } catch(Exception ex) {L($"GATT READ TRACE ERROR {id:X4}: {ex.Message}");}
+            finally {d.Complete();}
+        };
+    }
+    static bool traceReads;
     static async Task<bool> EnsureHidAdvertising() {
         for(int attempt=1;attempt<=3;attempt++) {
             L($"HID ADVERTISING START attempt={attempt}/3");
@@ -87,7 +100,9 @@ static class App
     }
     static async Task<int> Main(string[] args) {
         try {
-            L("DeskBridge Native HOGP v0.5 - F8 phone / PC input toggle");
+            traceReads=args.Contains("--trace-reads");
+            L("DeskBridge Native HOGP v0.7 - connection trace, Raw Input capture");
+            L($"TRACE READ REQUESTS={(traceReads ? "ENABLED" : "OFF")}; command --trace-reads");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -103,7 +118,7 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[4].AsBuffer()
             });
-            mouse.SubscribedClientsChanged += (_,_)=>L($"SUBSCRIBERS={mouse.SubscribedClients.Count}");
+            mouse.SubscribedClientsChanged += (_,_)=>{ Interlocked.Increment(ref mouseSubscriptions); L($"MOUSE SUBSCRIPTION CHANGE clients={mouse.SubscribedClients.Count}, totalEvents={mouseSubscriptions}"); };
             var d=await mouse.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
                 ReadProtectionLevel=sec, StaticValue=new byte[]{1,1}.AsBuffer()
             });
@@ -112,7 +127,7 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
-            keyboard.SubscribedClientsChanged += (_,_)=>L($"KEYBOARD SUBSCRIBERS={keyboard.SubscribedClients.Count}");
+            keyboard.SubscribedClientsChanged += (_,_)=>{ Interlocked.Increment(ref keyboardSubscriptions); L($"KEYBOARD SUBSCRIPTION CHANGE clients={keyboard.SubscribedClients.Count}, totalEvents={keyboardSubscriptions}"); };
             var kd=await keyboard.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
                 ReadProtectionLevel=sec,StaticValue=new byte[]{2,1}.AsBuffer()
             });
@@ -133,6 +148,7 @@ static class App
             ctrl.WriteRequested+=async (_,e)=> {
                 var def=e.GetDeferral();try {var req=await e.GetRequestAsync(); L("CONTROL POINT WRITE");}catch(Exception ex){L(ex.Message);}finally{def.Complete();}
             };
+            L($"GATT PROFILE registered: 1812 HID, 180F Battery, 180A Device Information delegated to Windows; reportMap={ReportMap.Length} bytes; security={sec}");
             L("BATTERY GATT REGISTERED; battery advertising disabled (HID service only).");
             if(!await EnsureHidAdvertising()) {
                 L("STARTUP FAILED: HID advertising did not reach Started after 3 attempts.");
@@ -147,7 +163,7 @@ static class App
                 Console.Write("hogp> ");
                 var cmd=Console.ReadLine()?.Trim().ToLowerInvariant();
                 if(cmd==null || cmd=="quit")break;
-                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, abortedEvents={advErrors}");continue;}
+                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, abortedEvents={advErrors}, mouseSubscriptionEvents={mouseSubscriptions}, keyboardSubscriptionEvents={keyboardSubscriptions}");continue;}
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
