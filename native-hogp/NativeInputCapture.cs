@@ -19,6 +19,7 @@ internal sealed class NativeInputCapture : IDisposable
     readonly WndProc windowDelegate;
     readonly object stateLock=new();
     readonly Queue<KeyEvent> keys=new();
+    readonly Queue<byte> buttonEvents=new();
     Thread? thread;
     IntPtr keyboardHook,mouseHook,window;
     uint threadId;
@@ -55,7 +56,7 @@ internal sealed class NativeInputCapture : IDisposable
                     log("F8 REJECTED: keyboard notification not accepted; PC remains active"); return;
                 }
                 lock(stateLock) {
-                    keys.Clear(); pendingDx=pendingDy=pendingWheel=0;
+                    keys.Clear();buttonEvents.Clear(); pendingDx=pendingDy=pendingWheel=0;
                     held.Clear(); buttons=modifiers=0;
                     Interlocked.Increment(ref generation);
                     Volatile.Write(ref active,1);
@@ -70,7 +71,7 @@ internal sealed class NativeInputCapture : IDisposable
     {
         lock(stateLock) {
             Interlocked.Increment(ref generation);
-            keys.Clear(); pendingDx=pendingDy=pendingWheel=0;
+            keys.Clear();buttonEvents.Clear(); pendingDx=pendingDy=pendingWheel=0;
             if(Interlocked.Exchange(ref active,0)==1) log("CAPTURE OFF: PC, reason="+reason);
             // sender will release HID buttons/keys on its next cycle.
         }
@@ -119,7 +120,7 @@ internal sealed class NativeInputCapture : IDisposable
                             ushort flags=(ushort)Marshal.ReadInt16(buffer,baseOffset);
                             if((flags&1)==0) { // RELATIVE; absolute packets must not move remote cursor
                                 int dx=Marshal.ReadInt32(buffer,baseOffset+12),dy=Marshal.ReadInt32(buffer,baseOffset+16);
-                                lock(stateLock) { if(Active) { pendingDx=Math.Clamp((long)pendingDx+dx,-50000,50000) is long nx?(int)nx:0; pendingDy=Math.Clamp((long)pendingDy+dy,-50000,50000) is long ny?(int)ny:0; } }
+                                lock(stateLock) { if(Active) { pendingDx=(int)Math.Clamp((long)pendingDx+dx,-50000L,50000L); pendingDy=(int)Math.Clamp((long)pendingDy+dy,-50000L,50000L); } }
                                 Interlocked.Increment(ref rawPackets);
                             }
                         }
@@ -160,7 +161,7 @@ internal sealed class NativeInputCapture : IDisposable
         lock(stateLock) {
             if(!Active) return CallNextHookEx(IntPtr.Zero,code,wp,lp);
             int bit=msg switch {WM_LBUTTONDOWN or WM_LBUTTONUP=>1,WM_RBUTTONDOWN or WM_RBUTTONUP=>2,WM_MBUTTONDOWN or WM_MBUTTONUP=>4,_=>0};
-            if(bit!=0) { if(msg==WM_LBUTTONDOWN||msg==WM_RBUTTONDOWN||msg==WM_MBUTTONDOWN) buttons|=(byte)bit; else buttons&=(byte)~bit; }
+            if(bit!=0) { if(msg==WM_LBUTTONDOWN||msg==WM_RBUTTONDOWN||msg==WM_MBUTTONDOWN) buttons|=(byte)bit; else buttons&=(byte)~bit; if(buttonEvents.Count>=64)ReturnLocal("button backlog");else buttonEvents.Enqueue(buttons); }
             else if(msg==WM_MOUSEWHEEL) pendingWheel=Math.Clamp(pendingWheel+(short)(m.mouseData>>16)/120,-127,127);
             else return CallNextHookEx(IntPtr.Zero,code,wp,lp);
         }
@@ -172,7 +173,7 @@ internal sealed class NativeInputCapture : IDisposable
         try {
             while(!cancellation.IsCancellationRequested) {
                 await Task.Delay(12,cancellation.Token);
-                int epoch,dx=0,dy=0,wheel=0;byte mouseButtons;KeyEvent[] batch;
+                int epoch,dx=0,dy=0,wheel=0;byte mouseButtons;KeyEvent[] batch;byte[] buttonBatch;
                 bool on;
                 lock(stateLock) {
                     epoch=generation;on=Active;
@@ -180,8 +181,8 @@ internal sealed class NativeInputCapture : IDisposable
                         dx=Math.Clamp(pendingDx,-127,127); dy=Math.Clamp(pendingDy,-127,127);
                         pendingDx-=dx;pendingDy-=dy;
                         wheel=Math.Clamp(pendingWheel,-127,127);pendingWheel=0;
-                        batch=keys.ToArray();keys.Clear();
-                    } else batch=Array.Empty<KeyEvent>();
+                        batch=keys.ToArray();keys.Clear();buttonBatch=buttonEvents.ToArray();buttonEvents.Clear();
+                    } else {batch=Array.Empty<KeyEvent>();buttonBatch=Array.Empty<byte>();}
                     mouseButtons=buttons;
                 }
                 if(epoch!=seenGeneration) {
@@ -205,7 +206,8 @@ internal sealed class NativeInputCapture : IDisposable
                 }
                 if(!Active || epoch!=generation) continue;
                 // At most one motion report per cycle, with bounded delta; stale motion never queues.
-                if(dx!=0||dy!=0||wheel!=0||mouseButtons!=buttons)
+                foreach(byte edge in buttonBatch) { if(!Active || epoch!=generation) break; if(!await Notify(mouse,new byte[]{edge,0,0,0},epoch))break; }
+                if(Active && epoch==generation && (dx!=0||dy!=0||wheel!=0))
                     await Notify(mouse,new byte[]{mouseButtons,unchecked((byte)(sbyte)dx),unchecked((byte)(sbyte)dy),unchecked((byte)(sbyte)wheel)},epoch);
             }
         } catch(OperationCanceledException) { }
