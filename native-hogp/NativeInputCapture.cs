@@ -19,6 +19,7 @@ internal sealed class NativeInputCapture : IDisposable
     readonly HookProc keyboardDelegate,mouseDelegate;
     readonly WndProc windowDelegate;
     readonly object stateLock=new();
+    readonly SemaphoreSlim notifyGate=new(1,1);
     readonly Queue<KeyEvent> keys=new();
     readonly Queue<byte> buttonEvents=new();
     Thread? thread;
@@ -52,8 +53,8 @@ internal sealed class NativeInputCapture : IDisposable
             try {
                 if(!Ready || keyboardHook==IntPtr.Zero || mouseHook==IntPtr.Zero || window==IntPtr.Zero) { log("F8 REJECTED: HID subscription or input hooks missing; PC remains active"); return; }
                 // A notification succeeding only confirms transport acceptance, not Android HID processing.
-                var results=await Select(keyboard).NotifyValueAsync(new byte[8].AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(4));
-                if(results.Count==0 || results.Any(x=>x.Status!=GattCommunicationStatus.Success) || !Ready) {
+                var probeOK=await ProbeAsync();
+                if(!probeOK || !Ready) {
                     log("F8 REJECTED: keyboard notification not accepted; PC remains active"); return;
                 }
                 lock(stateLock) {
@@ -214,6 +215,18 @@ internal sealed class NativeInputCapture : IDisposable
         } catch(OperationCanceledException) { }
         catch(Exception ex) { ReturnLocal("sender crashed: "+ex.Message); }
     }
+    async Task<bool> ProbeAsync()
+    {
+        if(!await notifyGate.WaitAsync(TimeSpan.FromSeconds(2))) return false;
+        try {
+            var op=Select(keyboard).NotifyValueAsync(new byte[8].AsBuffer());
+            try {
+                var results=await op.AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+                return results.Count>0 && results.All(x=>x.Status==GattCommunicationStatus.Success);
+            }
+            catch(TimeoutException) { op.Cancel();return false; }
+        } finally {notifyGate.Release();}
+    }
     GattLocalCharacteristic Select(GattLocalCharacteristic report)
     {
         var boot=ReferenceEquals(report,mouse)?bootMouse:bootKeyboard;
@@ -223,16 +236,27 @@ internal sealed class NativeInputCapture : IDisposable
     }
     async Task<bool> Notify(GattLocalCharacteristic characteristic,byte[] payload,int epoch)
     {
+        if(epoch!=generation || !Active) return false;
+        if(!await notifyGate.WaitAsync(TimeSpan.FromSeconds(2),cancellation.Token)) {
+            ReturnLocal("BLE send queue congested"); return false;
+        }
         try {
+            if(epoch!=generation || !Active) return false;
             var target=Select(characteristic);
             if(ReferenceEquals(target,bootMouse) && payload.Length==4) payload=payload[..3];
-            var result=await target.NotifyValueAsync(payload.AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(4),cancellation.Token);
-            if(result.Count==0 || result.Any(x=>x.Status!=GattCommunicationStatus.Success)) {
-                ReturnLocal("BLE notification rejected");return false;
+            var op=target.NotifyValueAsync(payload.AsBuffer());
+            bool success=false;
+            try {
+                var results=await op.AsTask().WaitAsync(TimeSpan.FromSeconds(3),cancellation.Token);
+                success=results.Count>0 && results.All(x=>x.Status==GattCommunicationStatus.Success);
             }
+            catch(TimeoutException) { op.Cancel();ReturnLocal("BLE notify timeout");return false; }
+            if(!success) {ReturnLocal("BLE notification rejected");return false;}
             return epoch==generation;
-        } catch(OperationCanceledException) { return false; }
-          catch(Exception ex) { ReturnLocal("BLE notify: "+ex.Message);return false; }
+        }
+        catch(OperationCanceledException) {return false;}
+        catch(Exception ex) {ReturnLocal("BLE notify failure: "+ex.Message);return false;}
+        finally {notifyGate.Release();}
     }
     static bool TryMapKey(int vk,out byte usage,out byte mod)
     {
