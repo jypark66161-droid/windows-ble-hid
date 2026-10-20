@@ -24,6 +24,8 @@ static class App
     static GattServiceProvider? hid,bat;
     static GattLocalCharacteristic? mouse, keyboard;
     static byte mode=1;
+    static readonly SemaphoreSlim advSignal = new(0, 100);
+    static int advErrors;
     static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
     static void L(string text) {
         var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {text}";
@@ -40,7 +42,10 @@ static class App
         var r=await GattServiceProvider.CreateAsync(Id(id));
         L($"SERVICE {id:X4}: {r.Error}");
         if(r.ServiceProvider==null || r.Error!=BluetoothError.Success) throw new Exception($"Service {id:X4}: {r.Error}");
-        r.ServiceProvider.AdvertisementStatusChanged += (_,e)=>L($"ADV {id:X4}: {e.Status}");
+        r.ServiceProvider.AdvertisementStatusChanged += (_,e)=> {
+            L($"ADV {id:X4}: {e.Status}, error={e.Error}");
+            if(id==0x1812) { if(e.Status==GattServiceProviderAdvertisementStatus.Aborted) Interlocked.Increment(ref advErrors); try { advSignal.Release(); } catch(SemaphoreFullException) {} }
+        };
         return r.ServiceProvider;
     }
     static async Task<GattLocalCharacteristic> Characteristic(GattServiceProvider svc,ushort id,GattLocalCharacteristicParameters par) {
@@ -53,9 +58,36 @@ static class App
        await Characteristic(s,id,new GattLocalCharacteristicParameters{
            CharacteristicProperties=GattCharacteristicProperties.Read,ReadProtectionLevel=sec,StaticValue=data.AsBuffer()
        });
+    static async Task<bool> EnsureHidAdvertising() {
+        for(int attempt=1;attempt<=3;attempt++) {
+            L($"HID ADVERTISING START attempt={attempt}/3");
+            while(advSignal.Wait(0)) {}
+            try {
+                if(hid!.AdvertisementStatus==GattServiceProviderAdvertisementStatus.Started) return true;
+                hid.StartAdvertising(new GattServiceProviderAdvertisingParameters{IsDiscoverable=true,IsConnectable=true});
+            } catch(Exception ex) { L($"HID START EXCEPTION: {ex}"); }
+            var deadline=DateTime.UtcNow.AddSeconds(10);
+            while(DateTime.UtcNow<deadline) {
+                var current=hid!.AdvertisementStatus;
+                if(current==GattServiceProviderAdvertisementStatus.Started) {
+                    L($"HID ADVERTISING READY attempt={attempt}, status={current}");
+                    return true;
+                }
+                var left=deadline-DateTime.UtcNow;
+                if(left<=TimeSpan.Zero) break;
+                await advSignal.WaitAsync(left<TimeSpan.FromMilliseconds(500)?left:TimeSpan.FromMilliseconds(500));
+            }
+            L($"HID ADVERTISING NOT READY attempt={attempt}, status={hid!.AdvertisementStatus}");
+            if(attempt<3) {
+                try { hid.StopAdvertising(); } catch(Exception ex) { L($"HID STOP EXCEPTION: {ex.Message}"); }
+                await Task.Delay(1200);
+            }
+        }
+        return false;
+    }
     static async Task<int> Main(string[] args) {
         try {
-            L("DeskBridge Native HOGP v0.3 - Windows-reserved 180A skipped");
+            L("DeskBridge Native HOGP v0.4 - HID-only advertising / startup verification");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -101,15 +133,18 @@ static class App
             ctrl.WriteRequested+=async (_,e)=> {
                 var def=e.GetDeferral();try {var req=await e.GetRequestAsync(); L("CONTROL POINT WRITE");}catch(Exception ex){L(ex.Message);}finally{def.Complete();}
             };
-            bat.StartAdvertising(new GattServiceProviderAdvertisingParameters{IsDiscoverable=false,IsConnectable=true});
-            hid.StartAdvertising(new GattServiceProviderAdvertisingParameters{IsDiscoverable=true,IsConnectable=true});
-            L($"ADVERTISING HID={hid.AdvertisementStatus}");
+            L("BATTERY GATT REGISTERED; battery advertising disabled (HID service only).");
+            if(!await EnsureHidAdvertising()) {
+                L("STARTUP FAILED: HID advertising did not reach Started after 3 attempts.");
+                PauseOnError();
+                return 3;
+            }
             L("Pair phone, then commands: status, right, left, up, down, click, a, enter, space, quit");
             while(true) {
                 Console.Write("hogp> ");
                 var cmd=Console.ReadLine()?.Trim().ToLowerInvariant();
                 if(cmd==null || cmd=="quit")break;
-                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, protocol={mode}");continue;}
+                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, protocol={mode}, abortedEvents={advErrors}");continue;}
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
@@ -127,7 +162,7 @@ static class App
                 L($"NOTIFY recipients={result.Count}, status={string.Join(",",result.Select(x=>x.Status))}");
                 if(cmd=="click") {await Task.Delay(35);await mouse.NotifyValueAsync(new byte[]{0,0,0,0}.AsBuffer());}
             }
-            hid.StopAdvertising();bat.StopAdvertising();return 0;
+            hid.StopAdvertising();return 0;
         }catch(Exception ex){L("FATAL ERROR: " + ex); PauseOnError(); return 1;}
     }
 }
