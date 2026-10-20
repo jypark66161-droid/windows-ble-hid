@@ -88,11 +88,10 @@ static class App
     static async Task<int> Main(string[] args) {
         try {
             // Single-instance ownership must be established before creating GATT services.
-            using var instanceGuard = new Mutex(false, @"Local\DeskBridge.NativeHOGP.SingleInstance");
-            bool ownsInstance = false;
-            try { ownsInstance = instanceGuard.WaitOne(0); }
-            catch (AbandonedMutexException) { ownsInstance = true; }
-            if (!ownsInstance) {
+            FileStream? instanceGuard=null;
+            try {
+                instanceGuard = new FileStream(Path.Combine(Path.GetTempPath(),"DeskBridge.NativeHOGP.single-instance.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+            } catch (IOException) {
                 L("ALREADY RUNNING: another DeskBridge Native HOGP process owns BLE HID. Close the older program first.");
                 PauseOnError(); return 4;
             }
@@ -190,7 +189,7 @@ static class App
             }
             capture.ReturnLocal("quit");
             hid.StopAdvertising();return 0;
-            } finally { instanceGuard.ReleaseMutex(); }
+            } finally { instanceGuard?.Dispose(); }
         }catch(Exception ex){L("FATAL ERROR: " + ex); PauseOnError(); return 1;}
     }
 }
