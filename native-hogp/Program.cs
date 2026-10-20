@@ -87,11 +87,22 @@ static class App
     }
     static async Task<int> Main(string[] args) {
         try {
-            L("DeskBridge Native HOGP v0.8 - boot-compatible profile + F8 input capture");
+            // Single-instance ownership must be established before creating GATT services.
+            using var instanceGuard = new Mutex(false, @"Local\DeskBridge.NativeHOGP.SingleInstance");
+            bool ownsInstance = false;
+            try { ownsInstance = instanceGuard.WaitOne(0); }
+            catch (AbandonedMutexException) { ownsInstance = true; }
+            if (!ownsInstance) {
+                L("ALREADY RUNNING: another DeskBridge Native HOGP process owns BLE HID. Close the older program first.");
+                PauseOnError(); return 4;
+            }
+            try {
+            L("DeskBridge Native HOGP v0.9 - single-instance BLE ownership / paced input");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
             }
+            L($"PROCESS ID={Environment.ProcessId}, instance=exclusive");
             var sec=args.Contains("--plain") ? GattProtectionLevel.Plain : GattProtectionLevel.EncryptionRequired;
             bat=await Service(0x180F);
             await Readonly(bat,0x2A19,new byte[]{100});
@@ -179,6 +190,7 @@ static class App
             }
             capture.ReturnLocal("quit");
             hid.StopAdvertising();return 0;
+            } finally { instanceGuard.ReleaseMutex(); }
         }catch(Exception ex){L("FATAL ERROR: " + ex); PauseOnError(); return 1;}
     }
 }
