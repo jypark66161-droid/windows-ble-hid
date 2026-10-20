@@ -22,7 +22,7 @@ static class App
         0x05,0x07,0x19,0x00,0x29,0x65,0x81,0x00,0xC0
     };
     static GattServiceProvider? hid,bat;
-    static GattLocalCharacteristic? mouse, keyboard;
+    static GattLocalCharacteristic? mouse, keyboard, bootMouse, bootKeyboard;
     static byte mode=1;
     static readonly SemaphoreSlim advSignal = new(0, 100);
     static int advErrors;
@@ -87,7 +87,7 @@ static class App
     }
     static async Task<int> Main(string[] args) {
         try {
-            L("DeskBridge Native HOGP v0.5 - F8 phone / PC input toggle");
+            L("DeskBridge Native HOGP v0.8 - boot-compatible profile + F8 input capture");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -117,6 +117,18 @@ static class App
                 ReadProtectionLevel=sec,StaticValue=new byte[]{2,1}.AsBuffer()
             });
             L($"KEYBOARD REPORT REF 2908: {kd.Error}");
+            // Boot Protocol input endpoints: additional standard HOGP entry points for hosts
+            // that prefer boot-compatible mouse/keyboard at first pairing.
+            bootMouse=await Characteristic(hid,0x2A33,new GattLocalCharacteristicParameters {
+                CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
+                ReadProtectionLevel=sec, StaticValue=new byte[3].AsBuffer()
+            });
+            bootKeyboard=await Characteristic(hid,0x2A22,new GattLocalCharacteristicParameters {
+                CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
+                ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
+            });
+            bootMouse.SubscribedClientsChanged+=(_,_)=>L($"BOOT MOUSE SUBSCRIBERS={bootMouse.SubscribedClients.Count}");
+            bootKeyboard.SubscribedClientsChanged+=(_,_)=>L($"BOOT KEYBOARD SUBSCRIBERS={bootKeyboard.SubscribedClients.Count}");
             var pm=await Characteristic(hid,0x2A4E,new GattLocalCharacteristicParameters{
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.WriteWithoutResponse,
                 ReadProtectionLevel=sec,WriteProtectionLevel=sec
@@ -139,7 +151,7 @@ static class App
                 PauseOnError();
                 return 3;
             }
-            using var capture = new NativeInputCapture(mouse, keyboard, L);
+            using var capture = new NativeInputCapture(mouse, keyboard, L, bootMouse, bootKeyboard, () => mode);
             L("Pair phone. F8 toggles PHONE/PC input; F9 emergency PC return.");
             L("Commands: status, right, left, up, down, click, a, enter, space, quit");
             using var checkTimer = new System.Threading.Timer(_ => { try { capture.HealthCheck(); } catch(Exception ex) { L("HEALTH ERROR: " + ex.Message); } }, null, 1000, 700);
@@ -147,7 +159,7 @@ static class App
                 Console.Write("hogp> ");
                 var cmd=Console.ReadLine()?.Trim().ToLowerInvariant();
                 if(cmd==null || cmd=="quit")break;
-                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, abortedEvents={advErrors}");continue;}
+                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}");continue;}
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
