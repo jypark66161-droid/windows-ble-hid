@@ -52,7 +52,7 @@ internal sealed class NativeInputCapture : IDisposable
             try {
                 if(!Ready || keyboardHook==IntPtr.Zero || mouseHook==IntPtr.Zero || window==IntPtr.Zero) { log("F8 REJECTED: HID subscription or input hooks missing; PC remains active"); return; }
                 // A notification succeeding only confirms transport acceptance, not Android HID processing.
-                var results=await Select(keyboard).NotifyValueAsync(new byte[8].AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+                var results=await Select(keyboard).NotifyValueAsync(new byte[8].AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(4));
                 if(results.Count==0 || results.Any(x=>x.Status!=GattCommunicationStatus.Success) || !Ready) {
                     log("F8 REJECTED: keyboard notification not accepted; PC remains active"); return;
                 }
@@ -173,7 +173,7 @@ internal sealed class NativeInputCapture : IDisposable
         int seenGeneration=-1;
         try {
             while(!cancellation.IsCancellationRequested) {
-                await Task.Delay(12,cancellation.Token);
+                await Task.Delay(32,cancellation.Token);
                 int epoch,dx=0,dy=0,wheel=0;byte mouseButtons;KeyEvent[] batch;byte[] buttonBatch;
                 bool on;
                 lock(stateLock) {
@@ -226,7 +226,7 @@ internal sealed class NativeInputCapture : IDisposable
         try {
             var target=Select(characteristic);
             if(ReferenceEquals(target,bootMouse) && payload.Length==4) payload=payload[..3];
-            var result=await target.NotifyValueAsync(payload.AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(2),cancellation.Token);
+            var result=await target.NotifyValueAsync(payload.AsBuffer()).AsTask().WaitAsync(TimeSpan.FromSeconds(4),cancellation.Token);
             if(result.Count==0 || result.Any(x=>x.Status!=GattCommunicationStatus.Success)) {
                 ReturnLocal("BLE notification rejected");return false;
             }
