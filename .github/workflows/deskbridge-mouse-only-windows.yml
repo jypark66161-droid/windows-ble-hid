@@ -1,0 +1,33 @@
+name: DeskBridge MOUSE ONLY Windows Build
+on:
+  push:
+    branches: [deskbridge-mouse-only-hogp-test]
+  workflow_dispatch:
+jobs:
+  mouse-only:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build independent MOUSE ONLY executable
+        shell: pwsh
+        run: dotnet publish native-hogp-mouse-only/DeskBridge.MouseOnly.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o mouse-only-out
+      - name: Windows Defender scan
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "mouse-only-out/DeskBridge-MOUSE-ONLY.exe").Path
+          $mp = "$env:ProgramFiles/Windows Defender/MpCmdRun.exe"
+          if (!(Test-Path $mp)) { throw "Windows Defender CLI unavailable; scan not verified" }
+          & $mp -Scan -ScanType 3 -File $exe -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Windows Defender scan failed with exit code $LASTEXITCODE" }
+      - name: Store SHA256
+        shell: pwsh
+        run: |
+          (Get-FileHash mouse-only-out/DeskBridge-MOUSE-ONLY.exe -Algorithm SHA256).Hash | Set-Content mouse-only-out/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-MOUSE-ONLY-Win64
+          path: mouse-only-out/
+          if-no-files-found: error
