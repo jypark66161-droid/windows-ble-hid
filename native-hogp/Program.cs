@@ -26,6 +26,41 @@ static class App
     static byte mode=1;
     static readonly SemaphoreSlim advSignal = new(0, 100);
     static int advErrors;
+    static int sessionGeneration;
+    static bool HasSubscribers() =>
+        (mouse?.SubscribedClients.Count ?? 0) > 0 ||
+        (keyboard?.SubscribedClients.Count ?? 0) > 0 ||
+        (bootMouse?.SubscribedClients.Count ?? 0) > 0 ||
+        (bootKeyboard?.SubscribedClients.Count ?? 0) > 0;
+    static void SubscriptionChanged(string name,int count)
+    {
+        var session=Interlocked.Increment(ref sessionGeneration);
+        L($"HID SESSION change={session}, endpoint={name}, count={count}, any={HasSubscribers()}");
+    }
+    static async Task AdvertisingSupervisor(CancellationToken ct)
+    {
+        var observedSince=DateTime.UtcNow;
+        while(!ct.IsCancellationRequested) {
+            try { await Task.Delay(4000,ct); }
+            catch(OperationCanceledException) {break;}
+            if(HasSubscribers()) {observedSince=DateTime.UtcNow;continue;}
+            var status=hid!.AdvertisementStatus;
+            if(status==GattServiceProviderAdvertisementStatus.Started ||
+               status==GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData) {
+                observedSince=DateTime.UtcNow;continue;
+            }
+            if(DateTime.UtcNow-observedSince<TimeSpan.FromSeconds(12)) continue;
+            try {
+                L($"HID ADVERTISING RECOVERY: status={status}, no subscribed HID host");
+                try {hid.StopAdvertising();} catch(Exception ex) {L("RECOVERY STOP: "+ex.Message);}
+                await Task.Delay(350,ct);
+                hid.StartAdvertising(new GattServiceProviderAdvertisingParameters{IsDiscoverable=true,IsConnectable=true});
+            } catch(OperationCanceledException) {break;}
+              catch(Exception ex) {L("RECOVERY START: "+ex.Message);}
+            observedSince=DateTime.UtcNow;
+        }
+    }
+
     static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
     static void L(string text) {
         var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {text}";
@@ -96,7 +131,7 @@ static class App
                 PauseOnError(); return 4;
             }
             try {
-            L("DeskBridge Native HOGP v0.10 - recovery and serialized input");
+            L("DeskBridge Native HOGP v0.11 - HID session and advertising recovery");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -113,7 +148,7 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[4].AsBuffer()
             });
-            mouse.SubscribedClientsChanged += (_,_)=>L($"SUBSCRIBERS={mouse.SubscribedClients.Count}");
+            mouse.SubscribedClientsChanged += (_,_)=>SubscriptionChanged("mouse-report",mouse.SubscribedClients.Count);
             var d=await mouse.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
                 ReadProtectionLevel=sec, StaticValue=new byte[]{1,1}.AsBuffer()
             });
@@ -122,7 +157,7 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
-            keyboard.SubscribedClientsChanged += (_,_)=>L($"KEYBOARD SUBSCRIBERS={keyboard.SubscribedClients.Count}");
+            keyboard.SubscribedClientsChanged += (_,_)=>SubscriptionChanged("keyboard-report",keyboard.SubscribedClients.Count);
             var kd=await keyboard.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
                 ReadProtectionLevel=sec,StaticValue=new byte[]{2,1}.AsBuffer()
             });
@@ -137,8 +172,8 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
-            bootMouse.SubscribedClientsChanged+=(_,_)=>L($"BOOT MOUSE SUBSCRIBERS={bootMouse.SubscribedClients.Count}");
-            bootKeyboard.SubscribedClientsChanged+=(_,_)=>L($"BOOT KEYBOARD SUBSCRIBERS={bootKeyboard.SubscribedClients.Count}");
+            bootMouse.SubscribedClientsChanged+=(_,_)=>SubscriptionChanged("mouse-boot",bootMouse.SubscribedClients.Count);
+            bootKeyboard.SubscribedClientsChanged+=(_,_)=>SubscriptionChanged("keyboard-boot",bootKeyboard.SubscribedClients.Count);
             var pm=await Characteristic(hid,0x2A4E,new GattLocalCharacteristicParameters{
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.WriteWithoutResponse,
                 ReadProtectionLevel=sec,WriteProtectionLevel=sec
@@ -160,6 +195,8 @@ static class App
                 L("Advertising unavailable; retrying in 5 seconds without relaunch.");
                 await Task.Delay(5000);
             }
+            using var supervisorStop=new CancellationTokenSource();
+            var supervisorTask=AdvertisingSupervisor(supervisorStop.Token);
             using var capture = new NativeInputCapture(mouse, keyboard, L, bootMouse, bootKeyboard, () => mode);
             L("Pair phone. F8 toggles PHONE/PC input; F9 emergency PC return.");
             L("Commands: status, right, left, up, down, click, a, enter, space, quit");
@@ -186,6 +223,7 @@ static class App
                 L($"NOTIFY recipients={result.Count}, status={string.Join(",",result.Select(x=>x.Status))}");
                 if(cmd=="click") {await Task.Delay(35);await mouse.NotifyValueAsync(new byte[]{0,0,0,0}.AsBuffer());}
             }
+            supervisorStop.Cancel();
             capture.ReturnLocal("quit");
             hid.StopAdvertising();return 0;
             } finally { instanceGuard?.Dispose(); }
