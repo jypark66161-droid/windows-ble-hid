@@ -132,7 +132,7 @@ static class Program
                 var def=e.GetDeferral();
                 try {
                     var req=await e.GetRequestAsync();
-                    if(req!=null && req.Value.Length>0)Log("HID CONTROL POINT: "+req.Value.GetByte(0));
+                    if(req!=null && req.Value.Length>0)Log("HID CONTROL POINT: "+Windows.Storage.Streams.DataReader.FromBuffer(req.Value).ReadByte());
                 }catch(Exception ex){Log("CONTROL POINT ERROR: "+ex.Message);}
                 finally{def.Complete();}
             };
