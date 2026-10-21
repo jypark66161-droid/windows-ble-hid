@@ -26,6 +26,8 @@ static class App
     static byte mode=1;
     static readonly SemaphoreSlim advSignal = new(0, 100);
     static int advErrors;
+    static readonly SemaphoreSlim restartGate = new(1,1);
+    static int restartCount;
     static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
     static void L(string text) {
         var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {text}";
@@ -96,7 +98,7 @@ static class App
                 PauseOnError(); return 4;
             }
             try {
-            L("DeskBridge Native HOGP v0.10 - recovery and serialized input");
+            L("DeskBridge Native HOGP v0.13 - manual reconnect without process restart");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -162,13 +164,41 @@ static class App
             }
             using var capture = new NativeInputCapture(mouse, keyboard, L, bootMouse, bootKeyboard, () => mode);
             L("Pair phone. F8 toggles PHONE/PC input; F9 emergency PC return.");
-            L("Commands: status, right, left, up, down, click, a, enter, space, quit");
+            L("Commands: status, restart, restart!, right, left, up, down, click, a, enter, space, quit");
             using var checkTimer = new System.Threading.Timer(_ => { try { capture.HealthCheck(); } catch(Exception ex) { L("HEALTH ERROR: " + ex.Message); } }, null, 1000, 700);
             while(true) {
                 Console.Write("hogp> ");
                 var cmd=Console.ReadLine()?.Trim().ToLowerInvariant();
                 if(cmd==null || cmd=="quit")break;
-                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}");continue;}
+                if(cmd=="restart" || cmd=="restart!") {
+                    // Keep the GATT provider, characteristics, security policy and OS pairing intact.
+                    // An established HID session is never interrupted by the normal restart command.
+                    bool connected = mouse.SubscribedClients.Count>0 || keyboard.SubscribedClients.Count>0 ||
+                                     bootMouse!.SubscribedClients.Count>0 || bootKeyboard!.SubscribedClients.Count>0;
+                    if(connected && cmd=="restart") {
+                        L("RESTART SKIPPED: HID subscribers present; use restart! to force advertising restart");
+                        continue;
+                    }
+                    if(!await restartGate.WaitAsync(0)) {
+                        L("RESTART BUSY: an advertising restart is already running"); continue;
+                    }
+                    try {
+                        capture.ReturnLocal("manual advertising restart");
+                        L($"RESTART BEGIN: forced={cmd=="restart!"}, subscribers={connected}");
+                        try { hid.StopAdvertising(); }
+                        catch(Exception ex) { L("RESTART STOP FAILED: "+ex.Message); }
+                        // Allow Windows to release the advertising lease, without destroying GATT.
+                        await Task.Delay(1500);
+                        while(advSignal.Wait(0)) {}
+                        bool started=await EnsureHidAdvertising();
+                        if(started) Interlocked.Increment(ref restartCount);
+                        L($"RESTART COMPLETE: advertising={(started?"Started":"NotReady")}, count={restartCount}; HID GATT unchanged");
+                    } catch(Exception ex) {
+                        L("RESTART ERROR: "+ex);
+                    } finally {restartGate.Release();}
+                    continue;
+                }
+                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}, manualRestarts={restartCount}");continue;}
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
