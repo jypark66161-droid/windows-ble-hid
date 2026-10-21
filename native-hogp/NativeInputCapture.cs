@@ -26,6 +26,7 @@ internal sealed class NativeInputCapture : IDisposable
     IntPtr keyboardHook,mouseHook,window;
     uint threadId;
     int active, pending, generation;
+    int toggleEpoch;
     bool f8Down;
     int pendingDx,pendingDy,pendingWheel;
     byte buttons,modifiers;
@@ -48,13 +49,14 @@ internal sealed class NativeInputCapture : IDisposable
     {
         if(Active) { ReturnLocal("F8"); return; }
         if(Interlocked.CompareExchange(ref pending,1,0)!=0) return;
+        var requestedEpoch=Volatile.Read(ref toggleEpoch);
         // Never block the Windows low-level hook thread on GATT.
         _=Task.Run(async()=>{
             try {
                 if(!Ready || keyboardHook==IntPtr.Zero || mouseHook==IntPtr.Zero || window==IntPtr.Zero) { log("F8 REJECTED: HID subscription or input hooks missing; PC remains active"); return; }
                 // A notification succeeding only confirms transport acceptance, not Android HID processing.
                 var probeOK=await ProbeAsync();
-                if(!probeOK || !Ready) {
+                if(!probeOK || !Ready || requestedEpoch!=Volatile.Read(ref toggleEpoch)) {
                     log("F8 REJECTED: keyboard notification not accepted; PC remains active"); return;
                 }
                 lock(stateLock) {
@@ -71,6 +73,7 @@ internal sealed class NativeInputCapture : IDisposable
     }
     public void ReturnLocal(string reason)
     {
+        Interlocked.Increment(ref toggleEpoch);
         lock(stateLock) {
             Interlocked.Increment(ref generation);
             keys.Clear();buttonEvents.Clear(); pendingDx=pendingDy=pendingWheel=0;
@@ -190,7 +193,7 @@ internal sealed class NativeInputCapture : IDisposable
                 if(epoch!=seenGeneration) {
                     seenGeneration=epoch;
                     held.Clear();modifiers=0;buttons=0;
-                    if(Ready) {
+                    if(Ready && on) {
                         await Notify(keyboard,new byte[8],epoch);
                         await Notify(mouse,new byte[4],epoch);
                     }
