@@ -1,0 +1,44 @@
+name: DeskBridge Android Companion APK
+on:
+  push:
+    branches: [deskbridge-android-companion-apk-v01]
+  workflow_dispatch:
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pinned upstream companion
+        uses: actions/checkout@v4
+        with:
+          repository: abhishek-raj/windows-ble-hid
+          ref: b33a0043b3865ea8251a242eae27aa2f72816512
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0"
+      - name: Unit test and assemble debug APK
+        working-directory: upstream/android/BleHid.Companion
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+      - name: Check APK and record SHA
+        run: |
+          APK=upstream/android/BleHid.Companion/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          mkdir -p output
+          cp "$APK" output/DeskBridge-Android-Connection-Helper-v01.apk
+          sha256sum output/DeskBridge-Android-Connection-Helper-v01.apk >output/SHA256.txt
+          cp upstream/LICENSE output/LICENSE.txt
+          printf '%s\n' 'Android BLE HOGP GATT connection helper. Source: abhishek-raj/windows-ble-hid b33a0043b3865ea8251a242eae27aa2f72816512.' 'Install APK on Android 12 or later. Open Find computer, select paired PC, enable Connection monitor.' 'Experimental: GATT connection does not guarantee system HID connection.' >output/README.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-Android-Connection-Helper-v01-APK
+          path: output/
+          if-no-files-found: error
