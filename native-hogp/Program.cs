@@ -98,7 +98,7 @@ static class App
                 PauseOnError(); return 4;
             }
             try {
-            L("DeskBridge Native HOGP v0.13 - manual reconnect without process restart");
+            L("DeskBridge Native HOGP v0.16 - HOGP Boot Keyboard Output conformance");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -107,7 +107,7 @@ static class App
             var sec=args.Contains("--plain") ? GattProtectionLevel.Plain : GattProtectionLevel.EncryptionRequired;
             bat=await Service(0x180F);
             await Readonly(bat,0x2A19,new byte[]{100});
-            L("INFO: 180A Device Information is Windows-reserved; skipping app-created 180A.");
+            L("INFO: Device Information 180A / PnP ID 2A50 are OS-owned on Windows; cannot register a second DIS with this API.");
             hid=await Service(0x1812);
             await Readonly(hid,0x2A4A,new byte[]{0x11,0x01,0,0x02},sec);
             await Readonly(hid,0x2A4B,ReportMap,sec);
@@ -139,6 +139,26 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
+            // HOGP Boot Keyboard Input requires the corresponding Boot Keyboard
+            // Output characteristic for LED state reports (Num/Caps/Scroll lock).
+            // This is a host-to-device output: it does NOT send keyboard input.
+            var bootKeyboardOutput=await Characteristic(hid,0x2A32,new GattLocalCharacteristicParameters {
+                CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Write|GattCharacteristicProperties.WriteWithoutResponse,
+                ReadProtectionLevel=sec,WriteProtectionLevel=sec,
+                StaticValue=new byte[]{0}.AsBuffer()
+            });
+            bootKeyboardOutput.WriteRequested+=async (_,e)=> {
+                var def=e.GetDeferral();
+                try {
+                    var req=await e.GetRequestAsync();
+                    if(req!=null) {
+                        L("BOOT KEYBOARD OUTPUT: LED state write received");
+                        if(req.Option==GattWriteOption.WriteWithResponse)req.Respond();
+                    }
+                } catch(Exception ex){L("BOOT KEYBOARD OUTPUT ERROR: "+ex.Message);}
+                finally{def.Complete();}
+            };
+            L("HOGP BOOT KEYBOARD OUTPUT 2A32 registered");
             bootMouse.SubscribedClientsChanged+=(_,_)=>L($"BOOT MOUSE SUBSCRIBERS={bootMouse.SubscribedClients.Count}");
             bootKeyboard.SubscribedClientsChanged+=(_,_)=>L($"BOOT KEYBOARD SUBSCRIBERS={bootKeyboard.SubscribedClients.Count}");
             var pm=await Characteristic(hid,0x2A4E,new GattLocalCharacteristicParameters{
