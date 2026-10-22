@@ -21,8 +21,10 @@ jobs:
       - name: Android SDK packages
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          sdkmanager --version
-          sdkmanager "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path "*/bin/sdkmanager" -type f | sort -V | tail -1)"
+          echo "Using $SDKMANAGER"
+          "$SDKMANAGER" --version
+          "$SDKMANAGER" "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0"
       - name: Unit test and assemble debug APK
         working-directory: upstream/android/BleHid.Companion
         run: |
