@@ -18,10 +18,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
       - name: Android SDK packages
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          sdkmanager --version
           sdkmanager "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0"
       - name: Unit test and assemble debug APK
         working-directory: upstream/android/BleHid.Companion
