@@ -66,7 +66,7 @@ static class App
                 if(req!=null) {
                     int offset=(int)req.Offset;
                     if(offset>data.Length)req.RespondWithProtocolError(0x07);
-                    else req.RespondWithValue(data.AsBuffer(offset,data.Length-offset));
+                    else req.RespondWithValue(data.Skip(offset).ToArray().AsBuffer());
                 }
             } catch(Exception ex){L($"GATT READ {uuid:X4} ERROR: "+ex);}
             finally{def.Complete();}
