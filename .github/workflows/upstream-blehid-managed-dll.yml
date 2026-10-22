@@ -1,0 +1,38 @@
+name: Upstream BleHid Framework-dependent DLL Build
+on:
+  push:
+    branches: [deskbridge-upstream-blehid-framework-dependent]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: abhishek-raj/windows-ble-hid
+          ref: b33a0043b3865ea8251a242eae27aa2f72816512
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish framework-dependent managed DLL
+        shell: pwsh
+        run: dotnet publish upstream/src/BleHid.Cli/BleHid.Cli.csproj -c Release -r win-x64 --self-contained false -p:UseAppHost=false -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o blehid-managed
+      - name: Confirm no EXE binaries in package
+        shell: pwsh
+        run: |
+          $exe = @(Get-ChildItem blehid-managed -Recurse -Filter *.exe)
+          if ($exe.Count -ne 0) { throw "Unexpected EXE in managed package: $($exe.Name -join ', ')" }
+          if (!(Test-Path blehid-managed/BleHid.Cli.dll)) { throw "Main DLL missing" }
+      - name: Check hashes and include source attribution
+        shell: pwsh
+        run: |
+          Copy-Item upstream/LICENSE blehid-managed/LICENSE.txt
+          'Based on upstream abhishek-raj/windows-ble-hid commit b33a0043b3865ea8251a242eae27aa2f72816512. Requires .NET 8 Desktop Runtime. Run: dotnet BleHid.Cli.dll' | Set-Content blehid-managed/README.txt
+          Get-ChildItem blehid-managed -Filter *.dll | ForEach-Object { "$($_.Name)  $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" } | Set-Content blehid-managed/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BleHid-Original-ManagedDLL-Net8-Win64
+          path: blehid-managed/
+          if-no-files-found: error
