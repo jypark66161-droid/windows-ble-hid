@@ -28,6 +28,51 @@ static class App
     static int advErrors;
     static readonly SemaphoreSlim restartGate = new(1,1);
     static int restartCount;
+    static int recoveryCount;
+    static int supervisorBusy;
+    static long lastActivityTicks = DateTime.UtcNow.Ticks;
+    static long lastAdAbortTicks;
+    static bool everSubscribed;
+    static void Activity(string source) {
+        Interlocked.Exchange(ref lastActivityTicks, DateTime.UtcNow.Ticks);
+        L("HID ACTIVITY: " + source);
+    }
+    static bool HasSubscribers() =>
+        (mouse?.SubscribedClients.Count ?? 0)>0 ||
+        (keyboard?.SubscribedClients.Count ?? 0)>0 ||
+        (bootMouse?.SubscribedClients.Count ?? 0)>0 ||
+        (bootKeyboard?.SubscribedClients.Count ?? 0)>0;
+    static void SubscriptionChanged(string name, GattLocalCharacteristic c) {
+        int count=c.SubscribedClients.Count;
+        Activity(name + " subscribers=" + count);
+        if(count>0) everSubscribed=true;
+    }
+    static async Task SuperviseAsync() {
+        if(hid==null || Interlocked.Exchange(ref supervisorBusy,1)!=0) return;
+        try {
+            if(HasSubscribers()) return;
+            var status=hid.AdvertisementStatus;
+            if(status==GattServiceProviderAdvertisementStatus.Started) return;
+            // Avoid interfering with pairing and discovery: require 45s idle.
+            long now=DateTime.UtcNow.Ticks;
+            if(now-Interlocked.Read(ref lastActivityTicks)<TimeSpan.FromSeconds(45).Ticks) return;
+            if(now-Interlocked.Read(ref lastAdAbortTicks)<TimeSpan.FromSeconds(45).Ticks) return;
+            if(!await restartGate.WaitAsync(0)) return;
+            try {
+                if(HasSubscribers()) return;
+                L("SUPERVISOR: no HID subscribers and advertising not Started after 45s idle; restore advertising");
+                try { hid.StopAdvertising(); } catch(Exception ex) { L("SUPERVISOR STOP: "+ex.Message); }
+                await Task.Delay(1500);
+                if(HasSubscribers()) return;
+                bool ok=await EnsureHidAdvertising();
+                if(ok) Interlocked.Increment(ref recoveryCount);
+                L("SUPERVISOR RECOVERY: advertising="+(ok?"Started":"NotReady")+", count="+recoveryCount);
+                Interlocked.Exchange(ref lastActivityTicks,DateTime.UtcNow.Ticks);
+            } finally { restartGate.Release(); }
+        } catch(Exception ex) { L("SUPERVISOR ERROR: "+ex); }
+        finally { Interlocked.Exchange(ref supervisorBusy,0); }
+    }
+
     static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
     static void L(string text) {
         var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {text}";
@@ -46,7 +91,7 @@ static class App
         if(r.ServiceProvider==null || r.Error!=BluetoothError.Success) throw new Exception($"Service {id:X4}: {r.Error}");
         r.ServiceProvider.AdvertisementStatusChanged += (_,e)=> {
             L($"ADV {id:X4}: {e.Status}, error={e.Error}");
-            if(id==0x1812) { if(e.Status==GattServiceProviderAdvertisementStatus.Aborted) Interlocked.Increment(ref advErrors); try { advSignal.Release(); } catch(SemaphoreFullException) {} }
+            if(id==0x1812) { if(e.Status==GattServiceProviderAdvertisementStatus.Aborted) { Interlocked.Increment(ref advErrors); Interlocked.Exchange(ref lastAdAbortTicks, DateTime.UtcNow.Ticks); } try { advSignal.Release(); } catch(SemaphoreFullException) {} }
         };
         return r.ServiceProvider;
     }
@@ -98,7 +143,7 @@ static class App
                 PauseOnError(); return 4;
             }
             try {
-            L("DeskBridge Native HOGP v0.13 - manual reconnect without process restart");
+            L("DeskBridge Native HOGP v0.14 - passive supervisor, guarded advertising recovery");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -115,7 +160,7 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[4].AsBuffer()
             });
-            mouse.SubscribedClientsChanged += (_,_)=>L($"SUBSCRIBERS={mouse.SubscribedClients.Count}");
+            mouse.SubscribedClientsChanged += (_,_)=>SubscriptionChanged("MOUSE",mouse);
             var d=await mouse.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
                 ReadProtectionLevel=sec, StaticValue=new byte[]{1,1}.AsBuffer()
             });
@@ -124,7 +169,7 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
-            keyboard.SubscribedClientsChanged += (_,_)=>L($"KEYBOARD SUBSCRIBERS={keyboard.SubscribedClients.Count}");
+            keyboard.SubscribedClientsChanged += (_,_)=>SubscriptionChanged("KEYBOARD",keyboard);
             var kd=await keyboard.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
                 ReadProtectionLevel=sec,StaticValue=new byte[]{2,1}.AsBuffer()
             });
@@ -139,8 +184,8 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
-            bootMouse.SubscribedClientsChanged+=(_,_)=>L($"BOOT MOUSE SUBSCRIBERS={bootMouse.SubscribedClients.Count}");
-            bootKeyboard.SubscribedClientsChanged+=(_,_)=>L($"BOOT KEYBOARD SUBSCRIBERS={bootKeyboard.SubscribedClients.Count}");
+            bootMouse.SubscribedClientsChanged+=(_,_)=>SubscriptionChanged("BOOT MOUSE",bootMouse);
+            bootKeyboard.SubscribedClientsChanged+=(_,_)=>SubscriptionChanged("BOOT KEYBOARD",bootKeyboard);
             var pm=await Characteristic(hid,0x2A4E,new GattLocalCharacteristicParameters{
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.WriteWithoutResponse,
                 ReadProtectionLevel=sec,WriteProtectionLevel=sec
@@ -165,7 +210,7 @@ static class App
             using var capture = new NativeInputCapture(mouse, keyboard, L, bootMouse, bootKeyboard, () => mode);
             L("Pair phone. F8 toggles PHONE/PC input; F9 emergency PC return.");
             L("Commands: status, restart, restart!, right, left, up, down, click, a, enter, space, quit");
-            using var checkTimer = new System.Threading.Timer(_ => { try { capture.HealthCheck(); } catch(Exception ex) { L("HEALTH ERROR: " + ex.Message); } }, null, 1000, 700);
+            using var checkTimer = new System.Threading.Timer(_ => { try { capture.HealthCheck(); _ = SuperviseAsync(); } catch(Exception ex) { L("HEALTH ERROR: " + ex.Message); } }, null, 1000, 2000);
             while(true) {
                 Console.Write("hogp> ");
                 var cmd=Console.ReadLine()?.Trim().ToLowerInvariant();
@@ -198,7 +243,7 @@ static class App
                     } finally {restartGate.Release();}
                     continue;
                 }
-                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}, manualRestarts={restartCount}");continue;}
+                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}, manualRestarts={restartCount}, autoRecoveries={recoveryCount}, everSubscribed={everSubscribed}, idleSeconds={(DateTime.UtcNow.Ticks-Interlocked.Read(ref lastActivityTicks))/TimeSpan.TicksPerSecond}");continue;}
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
