@@ -1,0 +1,32 @@
+name: DeskBridge v0.16 HID Conformance Build
+on:
+  push:
+    branches: [deskbridge-native-hogp-v16-hid-conformance]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish standard multi-file
+        shell: pwsh
+        run: dotnet publish native-hogp/DeskBridge.NativeHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o release-v16
+      - name: Windows Defender scan
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "release-v16/DeskBridge.NativeHogp.exe").Path
+          $mp = "$env:ProgramFiles/Windows Defender/MpCmdRun.exe"
+          if (!(Test-Path $mp)) { throw "Defender unavailable" }
+          & $mp -Scan -ScanType 3 -File $exe -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Defender scan failed" }
+      - name: SHA256
+        shell: pwsh
+        run: (Get-FileHash release-v16/DeskBridge.NativeHogp.exe -Algorithm SHA256).Hash | Set-Content release-v16/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-v16-HID-Conformance-Standard-Win64
+          path: release-v16/
+          if-no-files-found: error
