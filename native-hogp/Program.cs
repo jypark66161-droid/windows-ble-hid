@@ -28,6 +28,49 @@ static class App
     static int advErrors;
     static readonly SemaphoreSlim restartGate = new(1,1);
     static int restartCount;
+    static int autoRecoveries;
+    static int watcherRunning;
+    static long lastSubscriptionTicks=DateTime.UtcNow.Ticks;
+    static long lastAbortTicks=0;
+    static long lastRecoveryTicks=0;
+    static bool hadHidSubscriber;
+    static int SubscriberCount()=>
+        (mouse?.SubscribedClients.Count??0)+(keyboard?.SubscribedClients.Count??0)+
+        (bootMouse?.SubscribedClients.Count??0)+(bootKeyboard?.SubscribedClients.Count??0);
+    static void OnHidSubscribers(string kind,GattLocalCharacteristic c) {
+        var count=c.SubscribedClients.Count;
+        Interlocked.Exchange(ref lastSubscriptionTicks,DateTime.UtcNow.Ticks);
+        if(count>0) hadHidSubscriber=true;
+        L($"HID {kind} subscribers={count}, total={SubscriberCount()}, previouslyConnected={hadHidSubscriber}");
+    }
+    // Passive watch only: do NOT touch pairing, HID info, report map, or active subscriptions.
+    // The Windows OS owns BLE link establishment. Re-arm the advertising lease only if
+    // there are no HID subscribers and Windows reports that advertising is unavailable.
+    static async Task WatchAdvertisingAsync() {
+        if(hid==null || Interlocked.Exchange(ref watcherRunning,1)!=0) return;
+        try {
+            if(SubscriberCount()>0)return;
+            var state=hid.AdvertisementStatus;
+            if(state==GattServiceProviderAdvertisementStatus.Started) return;
+            long now=DateTime.UtcNow.Ticks;
+            if(now-Interlocked.Read(ref lastSubscriptionTicks)<TimeSpan.FromSeconds(60).Ticks)return;
+            if(now-Interlocked.Read(ref lastAbortTicks)<TimeSpan.FromSeconds(60).Ticks)return;
+            if(now-Interlocked.Read(ref lastRecoveryTicks)<TimeSpan.FromSeconds(90).Ticks)return;
+            if(!await restartGate.WaitAsync(0))return;
+            try {
+                if(SubscriberCount()>0 || hid.AdvertisementStatus==GattServiceProviderAdvertisementStatus.Started)return;
+                L($"WATCH: no subscribers; advertising={hid.AdvertisementStatus}; idle >60 s. Re-arm advertisement without recreating GATT.");
+                try{hid.StopAdvertising();}catch(Exception ex){L("WATCH STOP: "+ex.Message);}
+                await Task.Delay(1500);
+                if(SubscriberCount()>0)return;
+                Interlocked.Exchange(ref lastRecoveryTicks,DateTime.UtcNow.Ticks);
+                if(await EnsureHidAdvertising())Interlocked.Increment(ref autoRecoveries);
+                L($"WATCH RESULT: advertising={hid.AdvertisementStatus}, autoRecoveries={autoRecoveries}");
+            }finally{restartGate.Release();}
+        }catch(Exception ex){L("WATCH ERROR: "+ex);}
+        finally{Interlocked.Exchange(ref watcherRunning,0);}
+    }
+
     static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "DeskBridge-HOGP-startup.log");
     static void L(string text) {
         var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {text}";
@@ -46,7 +89,7 @@ static class App
         if(r.ServiceProvider==null || r.Error!=BluetoothError.Success) throw new Exception($"Service {id:X4}: {r.Error}");
         r.ServiceProvider.AdvertisementStatusChanged += (_,e)=> {
             L($"ADV {id:X4}: {e.Status}, error={e.Error}");
-            if(id==0x1812) { if(e.Status==GattServiceProviderAdvertisementStatus.Aborted) Interlocked.Increment(ref advErrors); try { advSignal.Release(); } catch(SemaphoreFullException) {} }
+            if(id==0x1812) { if(e.Status==GattServiceProviderAdvertisementStatus.Aborted) { Interlocked.Increment(ref advErrors); Interlocked.Exchange(ref lastAbortTicks,DateTime.UtcNow.Ticks); } try { advSignal.Release(); } catch(SemaphoreFullException) {} }
         };
         return r.ServiceProvider;
     }
@@ -98,7 +141,7 @@ static class App
                 PauseOnError(); return 4;
             }
             try {
-            L("DeskBridge Native HOGP v0.13 - manual reconnect without process restart");
+            L("DeskBridge Native HOGP v0.15 - pairing-safe passive recovery");
             var adapter=await BluetoothAdapter.GetDefaultAsync();
             if(adapter==null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported) {
                 L("ERROR: BLE peripheral mode unavailable"); PauseOnError(); return 2;
@@ -115,7 +158,7 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[4].AsBuffer()
             });
-            mouse.SubscribedClientsChanged += (_,_)=>L($"SUBSCRIBERS={mouse.SubscribedClients.Count}");
+            mouse.SubscribedClientsChanged += (_,_)=>OnHidSubscribers("MOUSE",mouse);
             var d=await mouse.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
                 ReadProtectionLevel=sec, StaticValue=new byte[]{1,1}.AsBuffer()
             });
@@ -124,7 +167,7 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
-            keyboard.SubscribedClientsChanged += (_,_)=>L($"KEYBOARD SUBSCRIBERS={keyboard.SubscribedClients.Count}");
+            keyboard.SubscribedClientsChanged += (_,_)=>OnHidSubscribers("KEYBOARD",keyboard);
             var kd=await keyboard.CreateDescriptorAsync(Id(0x2908),new GattLocalDescriptorParameters{
                 ReadProtectionLevel=sec,StaticValue=new byte[]{2,1}.AsBuffer()
             });
@@ -139,8 +182,8 @@ static class App
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[8].AsBuffer()
             });
-            bootMouse.SubscribedClientsChanged+=(_,_)=>L($"BOOT MOUSE SUBSCRIBERS={bootMouse.SubscribedClients.Count}");
-            bootKeyboard.SubscribedClientsChanged+=(_,_)=>L($"BOOT KEYBOARD SUBSCRIBERS={bootKeyboard.SubscribedClients.Count}");
+            bootMouse.SubscribedClientsChanged+=(_,_)=>OnHidSubscribers("BOOT MOUSE",bootMouse);
+            bootKeyboard.SubscribedClientsChanged+=(_,_)=>OnHidSubscribers("BOOT KEYBOARD",bootKeyboard);
             var pm=await Characteristic(hid,0x2A4E,new GattLocalCharacteristicParameters{
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.WriteWithoutResponse,
                 ReadProtectionLevel=sec,WriteProtectionLevel=sec
@@ -165,7 +208,7 @@ static class App
             using var capture = new NativeInputCapture(mouse, keyboard, L, bootMouse, bootKeyboard, () => mode);
             L("Pair phone. F8 toggles PHONE/PC input; F9 emergency PC return.");
             L("Commands: status, restart, restart!, right, left, up, down, click, a, enter, space, quit");
-            using var checkTimer = new System.Threading.Timer(_ => { try { capture.HealthCheck(); } catch(Exception ex) { L("HEALTH ERROR: " + ex.Message); } }, null, 1000, 700);
+            using var checkTimer = new System.Threading.Timer(_ => { try { capture.HealthCheck(); _ = WatchAdvertisingAsync(); } catch(Exception ex) { L("HEALTH ERROR: " + ex.Message); } }, null, 1000, 2000);
             while(true) {
                 Console.Write("hogp> ");
                 var cmd=Console.ReadLine()?.Trim().ToLowerInvariant();
@@ -198,7 +241,7 @@ static class App
                     } finally {restartGate.Release();}
                     continue;
                 }
-                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}, manualRestarts={restartCount}");continue;}
+                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}, manualRestarts={restartCount}, autoRecoveries={autoRecoveries}, everHidSubscribed={hadHidSubscriber}, subscriptionIdleSeconds={(DateTime.UtcNow.Ticks-Interlocked.Read(ref lastSubscriptionTicks))/TimeSpan.TicksPerSecond}");continue;}
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
