@@ -30,6 +30,48 @@ static class App
     static int restartCount;
     static int recoveryCount;
     static int supervisorBusy;
+    static readonly object sessionLock=new();
+    static GattSession? observedSession;
+    static bool sessionSeen;
+    static void ObserveSession(GattSession? session,string stage) {
+        if(session==null)return;
+        bool added=false;
+        lock(sessionLock) {
+            if(!ReferenceEquals(observedSession,session)) {
+                if(observedSession!=null)
+                    observedSession.SessionStatusChanged-=SessionStatusChanged;
+                observedSession=session;
+                observedSession.SessionStatusChanged+=SessionStatusChanged;
+                added=true;
+            }
+            sessionSeen=true;
+        }
+        Activity("GATT "+stage+", session="+session.SessionStatus+(added?" (new observer)":""));
+    }
+    static void SessionStatusChanged(GattSession session,GattSessionStatusChangedEventArgs args) {
+        Activity("GATT SESSION changed to "+args.Status+", error="+args.Error);
+    }
+    static bool ActiveObservedSession() {
+        lock(sessionLock) return observedSession?.SessionStatus==GattSessionStatus.Active;
+    }
+    static async Task ObservableReadOnly(GattServiceProvider svc,ushort uuid,byte[] data,GattProtectionLevel sec) {
+        var c=await Characteristic(svc,uuid,new GattLocalCharacteristicParameters{
+            CharacteristicProperties=GattCharacteristicProperties.Read, ReadProtectionLevel=sec
+        });
+        c.ReadRequested+=async (_,e)=>{
+            var def=e.GetDeferral();
+            try {
+                ObserveSession(e.Session,$"READ {uuid:X4}");
+                var req=await e.GetRequestAsync();
+                if(req!=null) {
+                    int offset=(int)req.Offset;
+                    if(offset>data.Length)req.RespondWithProtocolError(0x07);
+                    else req.RespondWithValue(data.AsBuffer(offset,data.Length-offset));
+                }
+            } catch(Exception ex){L($"GATT READ {uuid:X4} ERROR: "+ex);}
+            finally{def.Complete();}
+        };
+    }
     static long lastActivityTicks = DateTime.UtcNow.Ticks;
     static long lastAdAbortTicks;
     static bool everSubscribed;
@@ -50,7 +92,7 @@ static class App
     static async Task SuperviseAsync() {
         if(hid==null || Interlocked.Exchange(ref supervisorBusy,1)!=0) return;
         try {
-            if(HasSubscribers()) return;
+            if(HasSubscribers() || ActiveObservedSession()) return;
             var status=hid.AdvertisementStatus;
             if(status==GattServiceProviderAdvertisementStatus.Started) return;
             // Avoid interfering with pairing and discovery: require 45s idle.
@@ -59,11 +101,11 @@ static class App
             if(now-Interlocked.Read(ref lastAdAbortTicks)<TimeSpan.FromSeconds(45).Ticks) return;
             if(!await restartGate.WaitAsync(0)) return;
             try {
-                if(HasSubscribers()) return;
+                if(HasSubscribers() || ActiveObservedSession()) return;
                 L("SUPERVISOR: no HID subscribers and advertising not Started after 45s idle; restore advertising");
                 try { hid.StopAdvertising(); } catch(Exception ex) { L("SUPERVISOR STOP: "+ex.Message); }
                 await Task.Delay(1500);
-                if(HasSubscribers()) return;
+                if(HasSubscribers() || ActiveObservedSession()) return;
                 bool ok=await EnsureHidAdvertising();
                 if(ok) Interlocked.Increment(ref recoveryCount);
                 L("SUPERVISOR RECOVERY: advertising="+(ok?"Started":"NotReady")+", count="+recoveryCount);
@@ -154,8 +196,8 @@ static class App
             await Readonly(bat,0x2A19,new byte[]{100});
             L("INFO: 180A Device Information is Windows-reserved; skipping app-created 180A.");
             hid=await Service(0x1812);
-            await Readonly(hid,0x2A4A,new byte[]{0x11,0x01,0,0x02},sec);
-            await Readonly(hid,0x2A4B,ReportMap,sec);
+            await ObservableReadOnly(hid,0x2A4A,new byte[]{0x11,0x01,0,0x02},sec);
+            await ObservableReadOnly(hid,0x2A4B,ReportMap,sec);
             mouse=await Characteristic(hid,0x2A4D,new GattLocalCharacteristicParameters {
                 CharacteristicProperties=GattCharacteristicProperties.Read|GattCharacteristicProperties.Notify,
                 ReadProtectionLevel=sec, StaticValue=new byte[4].AsBuffer()
@@ -191,16 +233,16 @@ static class App
                 ReadProtectionLevel=sec,WriteProtectionLevel=sec
             });
             pm.ReadRequested+=async (_,e)=> {
-                var def=e.GetDeferral(); try { var req=await e.GetRequestAsync();req.RespondWithValue(new byte[]{mode}.AsBuffer());} catch(Exception ex){L(ex.Message);} finally{def.Complete();}
+                var def=e.GetDeferral(); try { ObserveSession(e.Session,"READ protocol mode");var req=await e.GetRequestAsync();req.RespondWithValue(new byte[]{mode}.AsBuffer());} catch(Exception ex){L(ex.Message);} finally{def.Complete();}
             };
             pm.WriteRequested+=async (_,e)=> {
-                var def=e.GetDeferral();try {var req=await e.GetRequestAsync(); var rd=DataReader.FromBuffer(req.Value); if(rd.UnconsumedBufferLength>0)mode=rd.ReadByte();L($"MODE={mode}");}catch(Exception ex){L(ex.Message);}finally{def.Complete();}
+                var def=e.GetDeferral();try {ObserveSession(e.Session,"WRITE protocol mode");var req=await e.GetRequestAsync(); var rd=DataReader.FromBuffer(req.Value); if(rd.UnconsumedBufferLength>0)mode=rd.ReadByte();L($"MODE={mode}");}catch(Exception ex){L(ex.Message);}finally{def.Complete();}
             };
             var ctrl=await Characteristic(hid,0x2A4C,new GattLocalCharacteristicParameters{
                 CharacteristicProperties=GattCharacteristicProperties.WriteWithoutResponse,WriteProtectionLevel=sec
             });
             ctrl.WriteRequested+=async (_,e)=> {
-                var def=e.GetDeferral();try {var req=await e.GetRequestAsync(); L("CONTROL POINT WRITE");}catch(Exception ex){L(ex.Message);}finally{def.Complete();}
+                var def=e.GetDeferral();try {ObserveSession(e.Session,"WRITE control point");var req=await e.GetRequestAsync(); L("CONTROL POINT WRITE");}catch(Exception ex){L(ex.Message);}finally{def.Complete();}
             };
             L("BATTERY GATT REGISTERED; battery advertising disabled (HID service only).");
             while(!await EnsureHidAdvertising()) {
@@ -243,7 +285,7 @@ static class App
                     } finally {restartGate.Release();}
                     continue;
                 }
-                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}, manualRestarts={restartCount}, autoRecoveries={recoveryCount}, everSubscribed={everSubscribed}, idleSeconds={(DateTime.UtcNow.Ticks-Interlocked.Read(ref lastActivityTicks))/TimeSpan.TicksPerSecond}");continue;}
+                if(cmd=="status"){L($"HID={hid.AdvertisementStatus}, mouse={mouse.SubscribedClients.Count}, keyboard={keyboard.SubscribedClients.Count}, capture={(capture.Active ? "PHONE" : "PC")}, protocol={mode}, bootMouse={bootMouse!.SubscribedClients.Count}, bootKeyboard={bootKeyboard!.SubscribedClients.Count}, abortedEvents={advErrors}, manualRestarts={restartCount}, autoRecoveries={recoveryCount}, everSubscribed={everSubscribed}, sessionSeen={sessionSeen}, sessionActive={ActiveObservedSession()}, idleSeconds={(DateTime.UtcNow.Ticks-Interlocked.Read(ref lastActivityTicks))/TimeSpan.TicksPerSecond}");continue;}
                 if(cmd=="a" || cmd=="enter" || cmd=="space"){
                     if(keyboard.SubscribedClients.Count==0){L("NO KEYBOARD SUBSCRIBER");continue;}
                     byte usage=cmd=="a"?(byte)0x04:cmd=="enter"?(byte)0x28:(byte)0x2C;
