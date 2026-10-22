@@ -1,0 +1,32 @@
+name: DeskBridge v0.14 Link Supervisor Windows Build
+on:
+  push:
+    branches: [deskbridge-native-hogp-v14-link-supervisor]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish v0.14 standalone Windows executable
+        shell: pwsh
+        run: dotnet publish native-hogp/DeskBridge.NativeHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o native-hogp-v14-out
+      - name: Windows Defender scan
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "native-hogp-v14-out/DeskBridge.NativeHogp.exe").Path
+          $mp = "$env:ProgramFiles/Windows Defender/MpCmdRun.exe"
+          if (!(Test-Path $mp)) { throw "Windows Defender CLI unavailable" }
+          & $mp -Scan -ScanType 3 -File $exe -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Defender scan failed" }
+      - name: Hash
+        shell: pwsh
+        run: (Get-FileHash native-hogp-v14-out/DeskBridge.NativeHogp.exe -Algorithm SHA256).Hash | Set-Content native-hogp-v14-out/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-NativeHOGP-v14-LinkSupervisor-Win64
+          path: native-hogp-v14-out/
+          if-no-files-found: error
