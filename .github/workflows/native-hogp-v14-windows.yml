@@ -14,6 +14,9 @@ jobs:
       - name: Publish v0.14 standalone Windows executable
         shell: pwsh
         run: dotnet publish native-hogp/DeskBridge.NativeHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o native-hogp-v14-out
+      - name: Publish standard multi-file .NET app (not single-file packed)
+        shell: pwsh
+        run: dotnet publish native-hogp/DeskBridge.NativeHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o native-hogp-v14-multifile
       - name: Windows Defender scan
         shell: pwsh
         run: |
@@ -22,6 +25,14 @@ jobs:
           if (!(Test-Path $mp)) { throw "Windows Defender CLI unavailable" }
           & $mp -Scan -ScanType 3 -File $exe -DisableRemediation
           if ($LASTEXITCODE -ne 0) { throw "Defender scan failed" }
+      - name: Windows Defender scan multi-file EXE
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "native-hogp-v14-multifile/DeskBridge.NativeHogp.exe").Path
+          $mp = "$env:ProgramFiles/Windows Defender/MpCmdRun.exe"
+          if (!(Test-Path $mp)) { throw "Windows Defender CLI unavailable" }
+          & $mp -Scan -ScanType 3 -File $exe -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Defender multi-file scan failed" }
       - name: Hash
         shell: pwsh
         run: (Get-FileHash native-hogp-v14-out/DeskBridge.NativeHogp.exe -Algorithm SHA256).Hash | Set-Content native-hogp-v14-out/SHA256.txt
@@ -29,4 +40,10 @@ jobs:
         with:
           name: DeskBridge-NativeHOGP-v14-LinkSupervisor-Win64
           path: native-hogp-v14-out/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-v14-Standard-Multifile-Win64
+          path: native-hogp-v14-multifile/
           if-no-files-found: error
