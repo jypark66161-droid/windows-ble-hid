@@ -1,0 +1,41 @@
+name: DeskBridge Upstream BleHid Comparison
+on:
+  push:
+    branches: [deskbridge-upstream-blehid-baseline]
+  workflow_dispatch:
+jobs:
+  upstream-cli:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout fixed upstream BleHid source
+        uses: actions/checkout@v4
+        with:
+          repository: abhishek-raj/windows-ble-hid
+          ref: b33a0043b3865ea8251a242eae27aa2f72816512
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish original BleHid CLI (no DeskBridge HID modifications)
+        shell: pwsh
+        run: dotnet publish upstream/src/BleHid.Cli/BleHid.Cli.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o upstream-cli-out
+      - name: Defender scan of original implementation
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "upstream-cli-out/BleHid.Cli.exe").Path
+          $mp = "$env:ProgramFiles/Windows Defender/MpCmdRun.exe"
+          if (!(Test-Path $mp)) { throw "Windows Defender unavailable" }
+          & $mp -Scan -ScanType 3 -File $exe -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Windows Defender scan failed" }
+      - name: Copy attribution and SHA256
+        shell: pwsh
+        run: |
+          Copy-Item upstream/LICENSE upstream-cli-out/LICENSE
+          (Get-FileHash upstream-cli-out/BleHid.Cli.exe -Algorithm SHA256).Hash | Set-Content upstream-cli-out/SHA256.txt
+          "Based on upstream abhishek-raj/windows-ble-hid at b33a0043b3865ea8251a242eae27aa2f72816512" | Set-Content upstream-cli-out/SOURCE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-Upstream-BleHid-OriginalCLI-Win64
+          path: upstream-cli-out/
+          if-no-files-found: error
