@@ -1,0 +1,56 @@
+name: DeskBridge Independent HID Profiles
+on:
+  push:
+    branches: [deskbridge-independent-hid-profiles-v17]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build independent HID prototype
+        shell: pwsh
+        run: dotnet publish independent-hogp/DeskBridge.IndependentHogp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o independent-release
+      - name: Package double-click experiments
+        shell: pwsh
+        run: |
+          $p = 'independent-release'
+          @'
+          @echo off
+          cd /d "%~dp0"
+          DeskBridge.IndependentHogp.exe --profile=mouse
+          pause
+          '@ | Set-Content "$p\01-MouseOnly-Static.bat"
+          @'
+          @echo off
+          cd /d "%~dp0"
+          DeskBridge.IndependentHogp.exe --profile=keyboard
+          pause
+          '@ | Set-Content "$p\02-KeyboardOnly-Static.bat"
+          @'
+          @echo off
+          cd /d "%~dp0"
+          DeskBridge.IndependentHogp.exe --profile=composite
+          pause
+          '@ | Set-Content "$p\03-Composite-Static.bat"
+          @'
+          @echo off
+          cd /d "%~dp0"
+          DeskBridge.IndependentHogp.exe --profile=mouse --read-handlers
+          pause
+          '@ | Set-Content "$p\04-MouseOnly-ReadHandlers.bat"
+          @'
+          @echo off
+          cd /d "%~dp0"
+          DeskBridge.IndependentHogp.exe --profile=composite --read-handlers
+          pause
+          '@ | Set-Content "$p\05-Composite-ReadHandlers.bat"
+          @'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge-v17-Independent-HID-Experiments-Win64
+          path: independent-release/
+          retention-days: 30
