@@ -18,37 +18,17 @@ jobs:
         shell: pwsh
         run: |
           $p = 'independent-release'
-          @'
-          @echo off
-          cd /d "%~dp0"
-          DeskBridge.IndependentHogp.exe --profile=mouse
-          pause
-          '@ | Set-Content "$p\01-MouseOnly-Static.bat"
-          @'
-          @echo off
-          cd /d "%~dp0"
-          DeskBridge.IndependentHogp.exe --profile=keyboard
-          pause
-          '@ | Set-Content "$p\02-KeyboardOnly-Static.bat"
-          @'
-          @echo off
-          cd /d "%~dp0"
-          DeskBridge.IndependentHogp.exe --profile=composite
-          pause
-          '@ | Set-Content "$p\03-Composite-Static.bat"
-          @'
-          @echo off
-          cd /d "%~dp0"
-          DeskBridge.IndependentHogp.exe --profile=mouse --read-handlers
-          pause
-          '@ | Set-Content "$p\04-MouseOnly-ReadHandlers.bat"
-          @'
-          @echo off
-          cd /d "%~dp0"
-          DeskBridge.IndependentHogp.exe --profile=composite --read-handlers
-          pause
-          '@ | Set-Content "$p\05-Composite-ReadHandlers.bat"
-          @'
+          $cases = @(
+            @('01-MouseOnly-Static.bat','--profile=mouse'),
+            @('02-KeyboardOnly-Static.bat','--profile=keyboard'),
+            @('03-Composite-Static.bat','--profile=composite'),
+            @('04-MouseOnly-ReadHandlers.bat','--profile=mouse --read-handlers'),
+            @('05-Composite-ReadHandlers.bat','--profile=composite --read-handlers')
+          )
+          foreach ($case in $cases) {
+            $lines = @('@echo off','cd /d "%~dp0"',('DeskBridge.IndependentHogp.exe ' + $case[1]),'pause')
+            $lines | Set-Content (Join-Path $p $case[0]) -Encoding ascii
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: DeskBridge-v17-Independent-HID-Experiments-Win64
